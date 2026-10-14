@@ -1,0 +1,11 @@
+--- 01:03판/webapp/backend/guard.py
++++ v2/webapp/backend/guard.py
+@@ -60,7 +60,7 @@
+ 
+ LOCK_MESSAGE = (
+     "🔒 유료 API가 잠겨 있습니다. "
+-    "화면 좌측 상단의 [유료 API] 배지를 눌러 켤 수 있습니다(.env PAID_APIS_ENABLED=true 도 가능). "
++    "화면 위 메뉴바의 [유료 API] 배지를 눌러 켤 수 있습니다(.env PAID_APIS_ENABLED=true 도 가능). "
+     "무료 기능(논문 수집·추출·그림/표/참고문헌·원문 리더·기존 번역 열람)은 그대로 동작합니다."
+ )
+ 

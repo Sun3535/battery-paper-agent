@@ -1,0 +1,25 @@
+--- 01:03판/rag/tests/test_search_parse.py
++++ v2/rag/tests/test_search_parse.py
+@@ -5,6 +5,13 @@
+ from unittest.mock import patch
+ 
+ from rag import config, credit_guard, search_client
++import pytest
++
++
++@pytest.fixture(autouse=True)
++def _project_id(monkeypatch):
++    # 배포본에는 개인 프로젝트 ID 기본값이 없다(.env 에서 읽음) — 시험은 가짜 ID 로 돈다
++    monkeypatch.setattr(config, "GCP_PROJECT_ID", "test-project")
+ 
+ 
+ SAMPLE_RESPONSE = {
+@@ -14,7 +21,7 @@
+             "document": {
+                 "derivedStructData": {
+                     "title": "Silicon Anode Volume Expansion",
+-                    "link": "gs://<GCS 버킷: 공개본에서 지움>/papers/arxiv_2606.21467.pdf",
++                    "link": "gs://test-bucket/papers/arxiv_2606.21467.pdf",
+                     "snippets": [{"snippet": "nano-structuring mitigates volume expansion..."}],
+                 }
+             }

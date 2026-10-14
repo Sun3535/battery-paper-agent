@@ -1,0 +1,8 @@
+--- 01:03판/webapp/launch_msgs/no_python.txt
++++ v2/webapp/launch_msgs/no_python.txt
+@@ -0,0 +1,5 @@
++
++  [!] 파이썬(Python)이 설치되어 있지 않습니다.
++      https://www.python.org/downloads/ 에서 설치하세요.
++      설치 첫 화면에서 "Add Python to PATH" 를 꼭 체크하세요.
++

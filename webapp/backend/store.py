@@ -215,6 +215,23 @@ def create_document(
     )
 
 
+def recover_interrupted(conn) -> int:
+    """서버를 켤 때 한 번 — 처리 도중 서버가 꺼져 '번역 중'·'추출 중' 에 멈춘 논문을 풀어 준다. 풀어 준 편수를 돌려준다.
+
+    번역은 묶음마다 저장돼 있으므로 '수집 완료' 로 돌리고 사유를 남긴다 → 카드·리더의 [이어서 번역] 으로 남은 부분만 한다.
+    추출이 끝나지 않은 논문은 '실패' 로 돌린다(블록이 없거나 덜 저장됐을 수 있다) → 다시 올리면 된다.
+    """
+    n = conn.execute(
+        "UPDATE documents SET status='ready', progress=100, error=? WHERE status IN ('translating','indexing')",
+        ("처리가 중간에 멈췄습니다(서버가 꺼졌음). 번역이 덜 됐으면 [이어서 번역], 그림 분석이 덜 됐으면 다시 실행하면 남은 것만 합니다.",),
+    ).rowcount
+    n += conn.execute(
+        "UPDATE documents SET status='failed', progress=0, error=? WHERE status IN ('pending','extracting')",
+        ("처리 도중 서버가 꺼졌습니다 — 이 논문을 지우고 다시 올려 주세요.",),
+    ).rowcount
+    return n
+
+
 def set_status(conn, doc_id: str, status: str, progress: int | None = None, error: str | None = None) -> None:
     if progress is None:
         conn.execute("UPDATE documents SET status=?, error=? WHERE doc_id=?", (status, error, doc_id))
@@ -259,13 +276,17 @@ def save_translations(conn, doc_id: str, mapping: dict[int, str], model: str) ->
 
 def untranslated_blocks(conn, doc_id: str) -> list[dict]:
     """아직 번역 안 된 블록만 반환 — 캐시 히트분은 재번역하지 않는다(비용 절감)."""
+    from translate import needs_translation
+
     rows = conn.execute(
         """SELECT b.block_order, b.text_en FROM blocks b
            LEFT JOIN translations t ON t.doc_id=b.doc_id AND t.block_order=b.block_order
            WHERE b.doc_id=? AND t.block_order IS NULL AND b.text_en != ''""",
         (doc_id,),
     ).fetchall()
-    return [{"order": r["block_order"], "text": r["text_en"]} for r in rows]
+    # 번역기가 실제로 보내는 것과 같은 기준(숫자·기호뿐인 블록은 번역 대상이 아니다).
+    # 기준이 어긋나면 "번역할 것이 남았다" 고 나오는데 실행하면 아무것도 안 하는 논문이 생긴다.
+    return [{"order": r["block_order"], "text": r["text_en"]} for r in rows if needs_translation(r["text_en"])]
 
 
 def save_refs(conn, doc_id: str, refs: list[str]) -> None:
@@ -344,16 +365,22 @@ def paid_status_map(conn) -> dict[str, dict]:
     """문서별 {번역/그림분석} 진행 현황. 전부 로컬 집계 — 비용 0."""
     ensure_figure_table(conn)
 
-    text_total = {
-        r["doc_id"]: r["n"]
-        for r in conn.execute(
-            "SELECT doc_id, COUNT(*) n FROM blocks WHERE text_en != '' GROUP BY doc_id"
-        )
-    }
-    text_done = {
-        r["doc_id"]: r["n"]
-        for r in conn.execute("SELECT doc_id, COUNT(*) n FROM translations GROUP BY doc_id")
-    }
+    from translate import needs_translation
+
+    # "번역 대상" 은 번역기와 같은 기준으로 센다. 예전에는 글이 있는 블록을 전부 세어,
+    # 숫자·기호뿐인 블록이 있는 논문은 다 번역해도 '번역 완료' 가 되지 않았다.
+    text_total: dict[str, int] = {}
+    text_done: dict[str, int] = {}
+    for r in conn.execute(
+        """SELECT b.doc_id, b.text_en, t.block_order IS NOT NULL AS done FROM blocks b
+           LEFT JOIN translations t ON t.doc_id=b.doc_id AND t.block_order=b.block_order
+           WHERE b.text_en != ''"""
+    ):
+        if not needs_translation(r["text_en"]):
+            continue
+        text_total[r["doc_id"]] = text_total.get(r["doc_id"], 0) + 1
+        if r["done"]:
+            text_done[r["doc_id"]] = text_done.get(r["doc_id"], 0) + 1
     fig_total = {
         r["doc_id"]: r["n"]
         for r in conn.execute(

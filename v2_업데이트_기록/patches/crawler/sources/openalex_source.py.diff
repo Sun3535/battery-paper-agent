@@ -1,0 +1,29 @@
+--- 01:03판/crawler/sources/openalex_source.py
++++ v2/crawler/sources/openalex_source.py
+@@ -8,6 +8,7 @@
+ 
+ from __future__ import annotations
+ 
++import os
+ import requests
+ 
+ from .. import config
+@@ -15,7 +16,8 @@
+ from .base import PaperSource
+ 
+ API_URL = "https://api.openalex.org/works"
+-MAILTO = "<개인 이메일: 공개본에서 지움>"  # polite pool 용 (인증 아님, 공개 관례)
++# polite pool 용 연락처(인증 아님). 배포본에 개인 주소를 싣지 않는다 — 쓰려면 .env 에 OPENALEX_MAILTO=...
++MAILTO = os.getenv("OPENALEX_MAILTO", "").strip()
+ 
+ 
+ def _reconstruct_abstract(inverted: dict | None) -> str:
+@@ -38,7 +40,7 @@
+             "filter": "open_access.is_oa:true",  # 오픈액세스만 (PDF 자동 다운로드 전제)
+             "sort": "publication_date:desc",
+             "per-page": min(max_results, 50),
+-            "mailto": MAILTO,
++            **({"mailto": MAILTO} if MAILTO else {}),
+         }
+         resp = requests.get(API_URL, params=params, timeout=config.REQUEST_TIMEOUT_SEC)
+         if resp.status_code == 429:

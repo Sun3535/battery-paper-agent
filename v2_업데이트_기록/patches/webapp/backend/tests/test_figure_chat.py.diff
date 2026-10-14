@@ -1,0 +1,17 @@
+--- 01:03판/webapp/backend/tests/test_figure_chat.py
++++ v2/webapp/backend/tests/test_figure_chat.py
+@@ -130,9 +130,12 @@
+ 
+ 
+ def test_figure_block_truncates_long_analysis():
+-    """비용 상한 — 분석문이 길어도 400자에서 잘린다"""
++    """비용 상한 — 분석문이 아주 길면 900자에서 잘린다.
++    (예전 400자 상한은 실제 분석문(329~422자)의 끝을 잘랐다 — 2026-10-14 점검)"""
+     blk = fa.build_figure_block([{"analysis": "가" * 2000, "title": "t", "page": 1}])
+-    assert len(blk) < 700
++    assert len(blk) < 1100
++    whole = "나" * 420
++    assert whole in fa.build_figure_block([{"analysis": whole, "title": "t", "page": 1}])
+ 
+ 
+ def test_relevant_analyses_empty_on_short_query(conn):

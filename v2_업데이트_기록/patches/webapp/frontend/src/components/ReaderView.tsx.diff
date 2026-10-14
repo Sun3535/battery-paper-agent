@@ -1,0 +1,128 @@
+--- 01:03판/webapp/frontend/src/components/ReaderView.tsx
++++ v2/webapp/frontend/src/components/ReaderView.tsx
+@@ -9,7 +9,7 @@
+ //   표제(제목 + 저자·소속) → 초록 상자 → 본문 → 참고문헌 상자. 서로 다른 칸·색으로 나눈다.
+ //   구획은 화면에서 추정한다(초록은 "ABSTRACT" 로 시작하는 블록). 못 찾으면 나누지 않고 예전처럼 한 줄로 보여 준다.
+ 
+-import { MessageOutlined, TranslationOutlined } from '@ant-design/icons'
++import { MessageOutlined, TranslationOutlined, WarningOutlined } from '@ant-design/icons'
+ import { Drawer, Empty, Progress, Spin, Table } from 'antd'
+ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+ import { api, type Block } from '../api'
+@@ -291,6 +291,9 @@
+ 
+   const translating = doc?.status === 'translating'
+   const locked = health ? !health.paid_apis_enabled : false
++  // 번역이 중간에 멈춘 논문 — 남은 문단은 원문으로 보인다. 왜 멈췄는지(doc.error)와 이어서 하는 길을 알린다.
++  const partial = !translating && !!doc?.translated && !doc.translate_complete
++  const showNotice = translating || !hasKo || partial || !!doc?.error
+ 
+   /** 본문 블록 하나 */
+   const renderBlock = (b: Block): ReactNode => {
+@@ -298,10 +301,13 @@
+     if (b.kind === 'image' || b.kind === 'table') {
+       const capText = lang === 'en' ? b.text_en : b.text_ko || b.text_en
+       const capAlt = (b.text_ko || b.text_en || `p.${b.page}`).replace(/\s+/g, ' ')
++      // 「나란히」에서는 캡션도 두 언어로 — 예전에는 한국어만 나와 원문 캡션을 대조할 수 없었다(점검 2026-10-14)
++      const capBoth = lang === 'both' && !!b.text_ko && !!b.text_en && b.text_ko !== b.text_en
+       return (
+         <figure key={b.order}>
+           {b.image_url && <img src={b.image_url} alt={capAlt} />}
+           {capText && <figcaption>{lang === 'en' ? capText : ko(capText)}</figcaption>}
++          {capBoth && <figcaption className="rd-cap-en">{b.text_en}</figcaption>}
+           {b.analysis_ko && lang !== 'en' && (
+             <div
+               className="ai-response"
+@@ -343,9 +349,18 @@
+     const enText = b.text_en || ''
+     const koNode = ko(b.text_ko || enText) // 번역 없으면 원문에라도 gloss
+ 
+-    if (isHeading(b)) return <h2 key={b.order}>{lang === 'en' ? enText : koNode}</h2>
+-
+-    if (lang === 'both') {
++    if (isHeading(b)) {
++      const both = lang === 'both' && !!b.text_ko && b.text_ko !== enText
++      return (
++        <h2 key={b.order}>
++          {lang === 'en' ? enText : koNode}
++          {both && <span className="rd-h-en">{enText}</span>}
++        </h2>
++      )
++    }
++
++    // 번역이 없는 문단은 「나란히」에서 같은 글이 두 번 나왔다 → 한 번만
++    if (lang === 'both' && b.text_ko && b.text_ko !== enText) {
+       return (
+         <div key={b.order} style={{ marginBottom: 24 }}>
+           <p style={{ margin: 0 }}>{koNode}</p>
+@@ -353,11 +368,14 @@
+         </div>
+       )
+     }
++    if (lang === 'both') return <p key={b.order}>{enText}</p>
+     return <p key={b.order}>{lang === 'en' ? enText : koNode}</p>
+   }
+ 
+   /** 초록 문단 */
+   const renderAbstract = (p: Piece): ReactNode => {
++    // 번역이 없는 초록은 「나란히」에서 같은 글이 두 번 나왔다 → 한 번만(2차 감독 점검: 7편)
++    if (lang === 'both' && (!p.ko || p.ko === p.en)) return <p key={p.key}>{p.en}</p>
+     if (lang === 'both') {
+       return (
+         <div key={p.key} style={{ marginBottom: '1em' }}>
+@@ -466,12 +484,10 @@
+             className="reader-body"
+             style={{ flex: 1, minWidth: 0, fontSize, ['--reader-fs' as string]: `${fontSize}px` }}
+           >
+-            {/* 번역본이 없는 까닭을 사실대로 알린다 — 잠금 때문인지, 아직 실행하지 않은 것인지 */}
+-            {!hasKo && (
++            {/* 번역 상태를 사실대로 알린다 — 진행 중인지, 잠금 때문인지, 중간에 멈췄는지(왜 멈췄는지까지) */}
++            {showNotice && (
+               <div className={`rd-notice${translating ? ' busy' : ''}`}>
+-                <div className="ico">
+-                  <TranslationOutlined />
+-                </div>
++                <div className="ico">{translating || !doc?.error ? <TranslationOutlined /> : <WarningOutlined />}</div>
+                 <div className="txt">
+                   {translating ? (
+                     <>
+@@ -488,6 +504,20 @@
+                         style={{ margin: '6px 0 0' }}
+                       />
+                     </>
++                  ) : partial ? (
++                    <>
++                      <b>번역이 일부만 끝났습니다</b>
++                      <span>
++                        {doc?.translated_blocks ?? 0} / {doc?.text_blocks ?? '…'} 문단 · 남은 문단은 원문으로
++                        보입니다.
++                        {locked &&
++                          (health?.offline_mode
++                            ? ' 완전 로컬 모드라 이어서 번역할 수 없습니다.'
++                            : ' 이어서 번역하려면 유료 API 잠금을 먼저 풀어야 합니다.')}
++                      </span>
++                    </>
++                  ) : hasKo ? (
++                    <b>처리하다 남은 알림이 있습니다</b>
+                   ) : locked ? (
+                     <>
+                       <b>아직 번역하지 않은 논문입니다</b>
+@@ -505,15 +535,16 @@
+                       </span>
+                     </>
+                   )}
++                  {!translating && doc?.error && <span className="why">사유: {doc.error}</span>}
+                 </div>
+-                {!translating && !locked && doc?.status === 'ready' && (
++                {!translating && !locked && doc?.status === 'ready' && (!hasKo || partial) && (
+                   <button
+                     type="button"
+                     className="go"
+                     disabled={translateOne.starting}
+                     onClick={() => doc && translateOne.start(doc)}
+                   >
+-                    지금 번역
++                    {partial ? '이어서 번역' : '지금 번역'}
+                   </button>
+                 )}
+               </div>

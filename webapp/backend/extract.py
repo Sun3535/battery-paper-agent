@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -28,7 +29,17 @@ import fitz  # PyMuPDF
 ZOOM = 2.0  # 렌더 배율 (비율 유지, 해상도만 향상)
 MIN_IMAGE_AREA = 10_000  # 이보다 작은 이미지 블록은 로고/아이콘으로 보고 제외 (pt^2)
 MIN_IMAGE_SIDE = 60  # 가로/세로 중 하나라도 이보다 작으면 제외 (장식용 구분선 등)
-CAPTION_PATTERN = re.compile(r"^\s*(?:fig(?:ure)?\.?|table|scheme)\s*\.?\s*\d+", re.IGNORECASE)
+# 캡션의 머리: "Fig. 3", "Figure S1"(보조 자료), "TABLE II"(로마 숫자 — 대문자만), "Scheme 1"
+CAPTION_PATTERN = re.compile(
+    r"^\s*(?:fig(?:ure)?\.?|table|scheme)\s*\.?\s*(?:S?\d+|(?-i:[IVX]+)\b)", re.IGNORECASE
+)
+
+
+def _is_caption(text: str) -> bool:
+    """캡션으로 시작하는 글인가. "Figure 3 shows…" 같은 본문 문장은 캡션이 아니다(captions.py 한 곳에서 판정)."""
+    import captions
+
+    return captions.is_caption_text(text)
 
 # 문단 병합 파라미터 — PDF가 줄 단위 블록으로 쪼개져 오는 경우가 많아, 같은 단(column)의
 # 인접한 줄들을 하나의 문단 블록으로 합친다(번역 품질·비용 모두에 유리).
@@ -173,7 +184,7 @@ def _merge_paragraphs(ordered: list[dict]) -> list[dict]:
             continue
 
         text = it["text"]
-        is_cap = bool(CAPTION_PATTERN.match(text))
+        is_cap = _is_caption(text)
         it = {**it, "is_caption": is_cap}
 
         prev = merged[-1] if merged else None
@@ -204,6 +215,12 @@ def _render_clip(page: fitz.Page, bbox: tuple[float, float, float, float], out_p
     """bbox 영역을 그대로 PNG로 렌더 (비율 유지, 재가공 없음)."""
     try:
         rect = fitz.Rect(*bbox)
+        if page.rotation:
+            # 가로로 누운 쪽(rotation 90/270): 블록 좌표는 돌리기 전 기준인데 get_pixmap 의 clip 은
+            # 돌린 뒤 기준이다. 오릴 때만 맞춰 준다. (page.remove_rotation() 은 쓰지 않는다 —
+            # 쪽 전체가 그림 하나로 잡혀 글 블록이 사라진다. 2026-10-14 점검에서 확인)
+            rect = rect * page.rotation_matrix
+            rect.normalize()
         pix = page.get_pixmap(matrix=fitz.Matrix(ZOOM, ZOOM), clip=rect)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         pix.save(str(out_path))
@@ -212,10 +229,23 @@ def _render_clip(page: fitz.Page, bbox: tuple[float, float, float, float], out_p
         return False
 
 
+INSIDE_REGION_RATIO = 0.5  # 글 블록 넓이의 이 비율 이상이 그림/표 영역 안이면 "그림 속 글자" 로 본다
+
+
 def _bbox_overlaps(a, b, tol: float = 2.0) -> bool:
+    """글 블록 a 가 그림/표 영역 b **안에 들어 있는가** (그림 속 글자인가).
+
+    예전에는 2pt 만 걸쳐도 참이라, 그림 옆에 붙은 캡션·본문 문단이 통째로 사라졌다
+    (2026-10-14 점검: 서가 91편에서 148블록·7만 7천 자, 캡션 55개). 그 글은 그림 PNG 에도 다 찍히지 않는다.
+    이제 글 블록 넓이의 절반 이상이 영역 안일 때만 그림 속 글자로 본다.
+    """
     ax0, ay0, ax1, ay1 = a
     bx0, by0, bx1, by1 = b
-    return not (ax1 <= bx0 + tol or bx1 <= ax0 + tol or ay1 <= by0 + tol or by1 <= ay0 + tol)
+    ix = min(ax1, bx1) - max(ax0, bx0)
+    iy = min(ay1, by1) - max(ay0, by0)
+    if ix <= tol or iy <= tol:
+        return False
+    return ix * iy >= INSIDE_REGION_RATIO * max(1e-6, (ax1 - ax0) * (ay1 - ay0))
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -237,7 +267,11 @@ _LIGATURES = {
 # 유니코드 카테고리로 판정: Cn=미할당, Co=사용자정의영역, Cs=서로게이트, Cc=제어문자
 _DEAD_CATEGORIES = {"Cn", "Co", "Cs", "Cc"}
 _KEEP_CONTROL = {"\n", "\t"}
-_WORD = re.compile(r"[A-Za-z가-힣]{3,}")
+# 3글자 이상 이어진 '낱말 글자'. 예전에는 영어·한글만 낱말로 쳐서 러시아어·한자 논문의 글이 '잔해' 로 지워졌다.
+# 라틴(악센트 포함)·키릴·가나·한자·한글을 낱말로 본다. 그리스 문자와 수학용 기울임 글자(𝑑𝑠…)는 넣지 않는다 —
+# 이 분야 논문에서는 수식 기호라, 낱말로 치면 수식 조각이 본문에 쏟아진다(91편으로 견줘 확인).
+_WORD = re.compile(r"[A-Za-z\u00C0-\u024F\u0400-\u04FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7A3]{3,}")
+_TABLE_HEAD = re.compile(r"^\s*table\b", re.IGNORECASE)
 DEBRIS_WORD_RATIO = 0.25  # 실단어가 이 비율 미만이면 수식 잔해로 본다
 DEBRIS_MAX_LEN = 60  # 실단어가 0개일 때, 이보다 짧으면 잔해로 본다
 
@@ -260,6 +294,24 @@ def sanitize_text(text: str) -> str:
     cleaned = "".join(out)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     return cleaned.strip()
+
+
+# 표가 끝났다고 볼 "문장으로 된 문단" — 표의 머리줄(`Sample Voltage (V) Capacity`)은 낱말이지만 문장이 아니다.
+# 2차 점검(2026-10-14): 머리줄에서 보호를 끄는 바람에 그 아래 숫자 줄(표의 값)이 여전히 버려졌다(217블록·29편).
+_SENTENCE_END = re.compile(r"[a-z]{2,}[.!?](?:\s|$)")
+_PAGE_NO = re.compile(r"\s*\d{1,4}\s*")
+
+
+def _is_prose(text: str) -> bool:
+    return len(_WORD.findall(text)) >= 10 and bool(_SENTENCE_END.search(text))
+
+
+def _continues(prev: dict, it: dict) -> bool:
+    """it 이 prev 바로 밑에 붙은 다음 줄인가(같은 단, 줄 간격 안) — 캡션의 둘째 줄을 알아보는 데 쓴다."""
+    return (
+        abs(prev["bbox"][0] - it["bbox"][0]) <= PARA_X_TOL
+        and -2 <= it["bbox"][1] - prev["bbox"][3] <= PARA_GAP_RATIO * max(prev.get("line_h", 10.0), 1.0)
+    )
 
 
 def is_math_debris(text: str) -> bool:
@@ -285,8 +337,21 @@ def _block_text(block: dict) -> str:
     return sanitize_text(text)
 
 
+# PDF 를 여러 편 한꺼번에 올리면 업로드 처리가 스레드로 동시에 돈다. 그런데 PyMuPDF 의 표 찾기(find_tables)는
+# 전역 설정(small_glyph_heights)을 잠깐 켰다가 되돌리는데, 두 편이 겹치면 켜진 채로 남는다 → 서버를 다시 켤 때까지
+# 모든 추출이 달라지고, 동시에 처리되는 논문은 돌 때마다 그림·캡션·표 값이 흔들렸다(2차 점검 2026-10-14).
+# → 추출은 한 번에 한 편씩 한다. 한 편에 몇 초라, 줄을 서도 사용자는 거의 못 느낀다.
+_EXTRACT_LOCK = threading.Lock()
+
+
 def extract_blocks(pdf_path: Path, images_dir: Path) -> ExtractResult:
-    """PDF를 읽기순서 블록 리스트로 변환. 그림/표는 원본 렌더 PNG로 저장."""
+    """PDF를 읽기순서 블록 리스트로 변환. 그림/표는 원본 렌더 PNG로 저장. (한 번에 한 편 — 위 _EXTRACT_LOCK)"""
+    with _EXTRACT_LOCK:
+        fitz.TOOLS.set_small_glyph_heights(False)  # 혹시 켜진 채 남은 전역 설정을 기본값으로 되돌린다
+        return _extract_blocks(pdf_path, images_dir)
+
+
+def _extract_blocks(pdf_path: Path, images_dir: Path) -> ExtractResult:
     doc = fitz.open(str(pdf_path))
     result = ExtractResult(page_count=doc.page_count)
     order = 0
@@ -303,9 +368,7 @@ def extract_blocks(pdf_path: Path, images_dir: Path) -> ExtractResult:
                 continue
             t = _block_text(b)
             if t:
-                text_hints.append(
-                    {"bbox": tuple(b["bbox"]), "is_caption_hint": bool(CAPTION_PATTERN.match(t))}
-                )
+                text_hints.append({"bbox": tuple(b["bbox"]), "is_caption_hint": _is_caption(t)})
 
         # 1) 비텍스트 영역 후보 수집: 표(find_tables) + 벡터 그림(cluster_drawings) + 래스터 이미지
         regions: list[dict] = []
@@ -348,8 +411,10 @@ def extract_blocks(pdf_path: Path, images_dir: Path) -> ExtractResult:
             if any(_bbox_overlaps(bbox, r["bbox"]) for r in regions):
                 continue
             text = _block_text(b)
-            if not text or is_math_debris(text):
-                continue  # 빈 블록 · 수식 잔해는 본문에서 뺀다(읽기 방해 + 번역비 낭비)
+            if not text:
+                continue
+            # 수식 잔해 판정은 여기서 하지 않는다 — 줄 단위로 버리면 숫자 많은 줄이 문단 한가운데서 빠진다
+            # (2026-10-14 점검: 새로 올리면 477블록이 그렇게 사라졌다). 아래에서 문단으로 합친 뒤에 판정한다.
             n_lines = max(1, len(b.get("lines", [])))
             items.append(
                 {
@@ -362,7 +427,28 @@ def extract_blocks(pdf_path: Path, images_dir: Path) -> ExtractResult:
 
         # 4) 읽기순서 정렬 → 문단 병합 → 블록 생성 (그림/표는 bbox 클립 렌더)
         ordered = _merge_paragraphs(_column_aware_sort(items, page_width, page_height))
+        under_table_caption = False  # 표 캡션 아래를 지나는 중인가(문장으로 된 문단·그림·쪽 끝에서 끝난다)
+        last_caption: dict | None = None  # 바로 앞 블록이 캡션이면 그 캡션
         for it in ordered:
+            prev_caption, last_caption = last_caption, None
+            if it["kind"] != "text":
+                under_table_caption = False
+            elif it.get("is_caption"):
+                # 캡션은 숫자가 많아도 남긴다. 표 캡션이면 그 아래 숫자 줄들은 표의 내용이다.
+                under_table_caption = bool(_TABLE_HEAD.match(it["text"]))
+                last_caption = it
+            elif is_math_debris(it["text"]):
+                # 문단으로 합친 뒤에도 통째로 수식 잔해인 블록은 뺀다(읽기 방해 + 번역비 낭비).
+                # 단, 지우면 내용이 어디에도 안 남는 두 경우는 남긴다(2026-10-14 점검):
+                #   - 표 캡션 아래의 숫자 줄 = **표의 값**(영역으로 못 잡힌 표는 그림으로도 안 남는다). 쪽 번호만은 뺀다.
+                #   - 캡션 바로 밑에 붙은 숫자 위주의 둘째 줄 = 캡션의 일부(캡션은 문단으로 합치지 않아 따로 떨어진다).
+                keep = (under_table_caption or (prev_caption is not None and _continues(prev_caption, it))) and not (
+                    _PAGE_NO.fullmatch(it["text"])  # 쪽 번호는 어느 경우든 뺀다
+                )
+                if not keep:
+                    continue
+            elif _is_prose(it["text"]):
+                under_table_caption = False  # 문장으로 된 문단이 나왔다 = 표가 끝났다(머리줄·소제목에서는 끄지 않는다)
             if it["kind"] == "text":
                 order += 1
                 result.blocks.append(
@@ -372,7 +458,7 @@ def extract_blocks(pdf_path: Path, images_dir: Path) -> ExtractResult:
                         page=page_index,
                         bbox=it["bbox"],
                         text=it["text"],
-                        is_caption=it.get("is_caption", bool(CAPTION_PATTERN.match(it["text"]))),
+                        is_caption=it.get("is_caption", _is_caption(it["text"])),
                     )
                 )
             else:  # region — 그림/표. 종류는 캡션을 보고 나중에 확정한다.
@@ -393,6 +479,9 @@ def extract_blocks(pdf_path: Path, images_dir: Path) -> ExtractResult:
                 )
 
     doc.close()
+    for b in result.blocks:  # 잠정: 셀 데이터가 뽑힌 영역은 표. 캡션을 붙인 뒤 _classify_regions 가 확정한다
+        if b.kind == "image" and b.table_rows:
+            b.kind = "table"
     _attach_captions(result.blocks)
     _classify_regions(result.blocks)
     return result
@@ -461,7 +550,13 @@ def _attach_captions(blocks: list[Block]) -> None:
     """
     import captions
 
-    items = [captions.Item(b.kind, b.page, b.text or "", bool(b.is_caption)) for b in blocks]
+    # 그림·표의 종류는 아직 잠정이다(find_tables 가 그래프를 표로 잘못 읽는 일이 흔하다) → "?" 를 붙여,
+    # 캡션 종류가 달라도 붙을 수 있게 하되 같은 종류를 먼저 고르게 한다. 확정은 _classify_regions 가 캡션을 보고 한다.
+    # (2차 점검: 잠정 종류로 엄격히 거르니 새로 올린 25편에서 그림 40장이 캡션을 잃었다)
+    items = [
+        captions.Item(b.kind + "?" if b.kind in ("image", "table") else b.kind, b.page, b.text or "", bool(b.is_caption))
+        for b in blocks
+    ]
     pairs, _ = captions.match(items)
     for f, c in pairs.items():
         blocks[f].text = blocks[c].text

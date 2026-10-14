@@ -66,15 +66,31 @@ export interface SearchResult {
   title: string
   score: number
   passages: { page: number; order: number; text: string }[]
+  /** AI 가 통째로 읽은 논문 — 문단은 화면에 다시 싣지 않는다 */
+  full?: boolean
+  /** 고른 논문이 아니라 참고로 붙인 다른 논문 */
+  ref?: boolean
+}
+
+/** 「이 논문만」으로 물었을 때 AI에게 실제로 건넨 분량 — "다 읽었다"고 잘못 믿지 않게 화면에 그대로 보여 준다 */
+export interface Coverage {
+  doc_id: string
+  title: string
+  pages: number
+  read_until_page: number
+  read_chars: number
+  total_chars: number
+  truncated: boolean
 }
 
 export interface ChatResponse {
-  // keyword=로컬 구절만(0원) · api=API 키 요약 · cloud=Vertex 요약(크레딧)
+  // keyword=로컬 구절만(0원) · local_llm=PC 안의 AI 요약(0원) · api=API 키 요약 · cloud=Vertex 요약(크레딧)
   // locked=하드락 · fallback=쓸 자격증명 없음
-  mode: 'keyword' | 'api' | 'cloud' | 'locked' | 'fallback'
+  mode: 'keyword' | 'local_llm' | 'api' | 'cloud' | 'locked' | 'fallback'
   answer: string
   results: SearchResult[]
   citations: Citation[]
+  coverage?: Coverage[]
   memories_used?: string[]
   memory_hints?: MemoryItem[]
   figures_used?: string[]
@@ -97,6 +113,8 @@ export interface Health {
   paid_apis_enabled: boolean
   offline_mode: boolean
   memory_enabled?: boolean
+  /** keyword 면 AI 요약 없이 찾은 구절만 보여 준다(0원·외부 전송 없음) */
+  search_mode?: string
   translate_provider?: string
   translate_model?: string | null
   translate_cost?: { per_page_krw: number | null; per_paper_krw: number | null } | null

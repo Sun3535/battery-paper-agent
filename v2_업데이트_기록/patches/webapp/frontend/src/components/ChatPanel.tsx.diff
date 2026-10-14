@@ -1,0 +1,145 @@
+--- 01:03판/webapp/frontend/src/components/ChatPanel.tsx
++++ v2/webapp/frontend/src/components/ChatPanel.tsx
+@@ -11,7 +11,7 @@
+ import { SearchOutlined, SendOutlined } from '@ant-design/icons'
+ import { Button, Input, Segmented, Spin } from 'antd'
+ import { useEffect, useRef, useState } from 'react'
+-import { api, type ChatResponse } from '../api'
++import { api, type ChatResponse, type Coverage, type Health } from '../api'
+ import { useApp } from '../store'
+ import { T } from '../theme'
+ 
+@@ -39,6 +39,31 @@
+   )
+ }
+ 
++/** 질문이 어디로 가고 돈이 드는지 — 설정에 따라 달라지므로 고정 문구를 쓰지 않는다(점검 2026-10-14).
++    예전에는 유료 AI 요약이 켜져 있어도 늘 "비용 0원 · 외부 전송 없음" 이라고 적혀 있었다. */
++function routeHint(h: Health | null): string {
++  if (!h) return '서버 상태를 확인하는 중입니다'
++  if (h.offline_mode) return '완전 로컬 모드 · 비용 0원 · 외부 전송 없음'
++  if (h.search_mode === 'keyword') return '구절 검색만 · 비용 0원 · 외부 전송 없음'
++  if (!h.paid_apis_enabled) return '유료 API 잠김 · 찾은 구절만 보여 줍니다 · 비용 0원 · 외부 전송 없음'
++  return 'AI 요약 켜짐 · 질문과 논문 발췌가 외부 AI로 전송되고 비용이 듭니다'
++}
++
++/** 「이 논문만」으로 물었을 때 AI에게 건넨 분량. 다 못 건넸으면 눈에 띄게 알린다. */
++function CoverageLine({ items }: { items: Coverage[] }) {
++  const cut = items.filter((c) => c.truncated)
++  const pct = (c: Coverage) => Math.round((100 * c.read_chars) / Math.max(1, c.total_chars))
++  const text = !cut.length
++    ? `📖 ${items.length > 1 ? `${items.length}편 모두` : '이 논문'} 처음부터 끝까지 읽고 답했습니다`
++    : items.length === 1
++      ? `📖 ${cut[0].pages}쪽 가운데 ${cut[0].read_until_page}쪽까지만 읽고 답했습니다 (글자 수로 ${pct(cut[0])}%) — 뒷부분 내용은 답에 없을 수 있습니다`
++      : `📖 ${items.length}편 가운데 ${cut.length}편은 앞부분만 읽고 답했습니다 (${cut
++          .slice(0, 3)
++          .map((c) => `${c.read_until_page}/${c.pages}쪽`)
++          .join(', ')}${cut.length > 3 ? ' …' : ''})`
++  return <div className={`pa-chat-cover${cut.length ? ' cut' : ''}`}>{text}</div>
++}
++
+ export function ChatPanel() {
+   const [turns, setTurns] = useState<Turn[]>([])
+   const [input, setInput] = useState('')
+@@ -46,6 +71,8 @@
+   // true면 특정 논문에 집중. 기본값은 아래 effect 가 상황에 맞춰 정한다.
+   const [scoped, setScoped] = useState(false)
+   const bottomRef = useRef<HTMLDivElement>(null)
++  const lastTurnRef = useRef<HTMLDivElement>(null)
++  const health = useApp((s) => s.health)
+   const openReader = useApp((s) => s.openReader)
+   const selectedId = useApp((s) => s.selectedId)
+   const checkedIds = useApp((s) => s.checkedIds)
+@@ -69,6 +96,7 @@
+     setInput('')
+     setTurns((t) => [...t, { question: q }])
+     setLoading(true)
++    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+     try {
+       const res = await api.chat(q, scoped ? focusIds : null)
+       setTurns((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, res } : x)))
+@@ -78,7 +106,8 @@
+       )
+     } finally {
+       setLoading(false)
+-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
++      // 답의 **첫 줄**이 보이게 한다 — 맨 아래로 내리면 긴 답·근거 목록에 밀려 답의 시작이 화면 밖으로 나갔다
++      setTimeout(() => lastTurnRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+     }
+   }
+ 
+@@ -100,7 +129,7 @@
+               <span style={{ color: T.textFaint }}>예: coulombic efficiency / 음극재 / dendrite</span>
+             </div>
+             <div style={{ fontSize: 11.5, color: T.textFaint, marginTop: 14 }}>
+-              로컬 검색 · 비용 0원 · 외부 전송 없음
++              {routeHint(health)}
+             </div>
+           </div>
+         )}
+@@ -108,7 +137,11 @@
+         {turns.map((t, i) => {
+           const locked = t.res?.mode === 'locked'
+           return (
+-            <div key={i} style={{ marginBottom: 22 }}>
++            <div
++              key={i}
++              ref={i === turns.length - 1 ? lastTurnRef : undefined}
++              style={{ marginBottom: 22, scrollMarginTop: 8 }}
++            >
+               <div className="pa-q">{t.question}</div>
+ 
+               {t.error && (
+@@ -149,7 +182,9 @@
+                           ? 'AI 요약 · API 키'
+                           : t.res.mode === 'fallback'
+                             ? '자격증명 없음'
+-                            : 'LOCAL SEARCH · 비용 0원'}
++                            : t.res.mode === 'local_llm'
++                              ? '로컬 AI 요약 · 비용 0원'
++                              : 'LOCAL SEARCH · 비용 0원'}
+                     {t.res.scope && (
+                       <span style={{ color: T.primary, marginLeft: 6 }}>
+                         · 「{t.res.scope}」 한정
+@@ -190,7 +225,14 @@
+                     </div>
+                   )}
+ 
+-                  <div style={{ whiteSpace: 'pre-wrap', color: T.text }}>{t.res.answer}</div>
++                  <div style={{ whiteSpace: 'pre-wrap', color: T.text, overflowWrap: 'anywhere' }}>
++                    {t.res.answer}
++                  </div>
++
++                  {/* AI 요약 답에는 서버가 같은 안내를 이미 붙인다 — 두 번 보이지 않게 */}
++                  {!!t.res.coverage?.length && !t.res.answer.includes('📖') && (
++                    <CoverageLine items={t.res.coverage} />
++                  )}
+ 
+                   {/* 로컬 검색: 논문별 매칭 구절 */}
+                   {t.res.results.map((g) => (
+@@ -206,8 +248,16 @@
+                           wordBreak: 'break-all',
+                         }}
+                       >
++                        {g.ref && <span className="pa-ref-tag">참고 · 다른 논문</span>}
+                         📄 {g.title} <span style={{ color: T.textFaint }}>— 읽기</span>
+                       </div>
++                      {!g.passages.length && (
++                        <div style={{ fontSize: 11.5, color: T.textFaint }}>
++                          {g.full
++                            ? '통독한 논문입니다 — 문단은 여기 다시 싣지 않습니다. 제목을 누르면 원문이 열립니다.'
++                            : '이 논문에서는 질문의 낱말이 그대로 나오는 구절을 찾지 못했습니다. 다른 표현(영어 낱말)으로 물어보세요.'}
++                        </div>
++                      )}
+                       {g.passages.map((p, j) => (
+                         <div
+                           key={j}
+@@ -221,7 +271,7 @@
+                           }}
+                         >
+                           <span style={{ color: T.textFaint, flexShrink: 0 }}>p{p.page}</span>
+-                          <span>
++                          <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                             <Highlight text={p.text} />
+                           </span>
+                         </div>

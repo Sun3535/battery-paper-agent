@@ -1,0 +1,27 @@
+--- 01:03판/webapp/frontend/src/store.ts
++++ v2/webapp/frontend/src/store.ts
+@@ -25,7 +25,7 @@
+   closeChat: () => void
+ }
+ 
+-export const useApp = create<AppState>((set, get) => ({
++export const useApp = create<AppState>((set) => ({
+   documents: [],
+   selectedId: null,
+   checkedIds: [],
+@@ -41,13 +41,8 @@
+     }
+   },
+   refreshDocuments: async () => {
+-    const docs = await api.listDocuments()
+-    set({ documents: docs })
+-    // 선택된 문서가 없으면 처리 완료된 첫 문서를 자동 선택
+-    if (!get().selectedId) {
+-      const ready = docs.find((d) => d.status === 'ready')
+-      if (ready) set({ selectedId: ready.doc_id })
+-    }
++    // 첫 논문을 몰래 골라 두지 않는다 — 아무것도 고르지 않았는데 챗봇이 엉뚱한 한 편에 묶였다(점검 2026-10-14).
++    set({ documents: await api.listDocuments() })
+   },
+   select: (id) => set({ selectedId: id }),
+   toggleChecked: (id) =>

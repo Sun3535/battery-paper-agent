@@ -6,10 +6,10 @@ crawler/ 와 달리 이 모듈은 GCP 리소스를 실제로 만들고 과금을
 
 import os
 
-# 프로젝트 ID와 버킷은 사람마다 다르다 → .env 로 채운다(공개 저장소라 기본값은 비워 둠).
-GCP_PROJECT_ID = os.getenv("BATTERY_RAG_GCP_PROJECT_ID", "")
+# 2026-07-11 실제 생성 완료 — 아래는 이 환경의 실제 값(디폴트). .env로 덮어쓸 수 있음.
+GCP_PROJECT_ID = os.getenv("BATTERY_RAG_GCP_PROJECT_ID", "")  # 기본값 없음 — 개인 프로젝트 ID 를 배포본에 싣지 않는다
 GCP_LOCATION = os.getenv("BATTERY_RAG_LOCATION", "global")  # Vertex AI Search는 보통 global 권장
-GCS_BUCKET = os.getenv("BATTERY_RAG_GCS_BUCKET", "")
+GCS_BUCKET = os.getenv("BATTERY_RAG_GCS_BUCKET", "")  # 기본값 없음 — 개인 버킷 이름을 배포본에 싣지 않는다(.env 에서 읽는다)
 DATASTORE_ID = os.getenv("BATTERY_RAG_DATASTORE_ID", "battery-papers-datastore")
 SEARCH_APP_ID = os.getenv("BATTERY_RAG_APP_ID", "battery-papers-search-app")
 

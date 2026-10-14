@@ -383,13 +383,13 @@ SKU에만 적용되기 때문입니다.
 > 무료로 동일 기능을 제공합니다.** 이 모듈의 진짜 가치는 나중에 배터리 카테고리 블로그
 > 파이프라인처럼 **코드가 자동으로 논문 근거를 조회**해야 할 때 생깁니다(API 호출 가능).
 
-**구축하는 리소스 (프로젝트 ID는 `.env`의 `BATTERY_RAG_GCP_PROJECT_ID`):**
+**실제 구축된 리소스 (프로젝트 `<GCP 프로젝트 ID>`):**
 | 리소스 | 값 |
 |--------|-----|
-| GCS 버킷 | `gs://<내 버킷>/papers/` (`.env`의 `BATTERY_RAG_GCS_BUCKET`) |
+| GCS 버킷 | `gs://<버킷 이름>/papers/` (논문 PDF 87건) |
 | 데이터스토어 | `battery-papers-datastore` (GENERIC, 디지털 파서) |
 | 검색 엔진 | `battery-papers-search-app` (Enterprise + LLM 애드온) |
-| 결제 | 내 결제 계정 → App Builder 크레딧으로 차감 |
+| 결제 | 결제계정 `<결제 계정: 공개본에서 지움>` → App Builder 크레딧으로 차감 |
 
 **사용법 (질문하기):**
 ```bash
@@ -401,7 +401,7 @@ python -m rag.credit_guard   # 크레딧 잔액 추정치 확인
 **논문을 더 추가하려면** (크롤 → 업로드 → 재색인):
 ```bash
 python -m crawler.run_crawl          # 새 논문 수집 + PDF 다운로드
-gcloud storage cp input/*.pdf gs://<내 버킷>/papers/
+gcloud storage cp input/*.pdf gs://<버킷 이름>/papers/
 # 그다음 콘솔 "데이터 가져오기"(INCREMENTAL) 또는 documents:import 재호출
 ```
 

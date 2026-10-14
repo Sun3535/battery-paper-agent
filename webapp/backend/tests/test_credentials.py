@@ -3,7 +3,6 @@
 실 API 호출 없음. 저장 위치는 로컬 SQLite(코드 옆)이며 외부 전송이 없음을 전제로 한다.
 """
 
-from pathlib import Path
 import pytest
 
 import guard
@@ -121,12 +120,15 @@ def test_no_active_user_means_no_key(db, monkeypatch):
 
 # ── 저장 위치 (로컬, 코드 옆) ─────────────────────────────────────
 def test_storage_is_local_file_next_to_code():
-    """DB는 이 PC의 앱 폴더 안에 있어야 한다(외부 전송 없음).
-    폴더 이름은 PC마다 다르므로(ZIP으로 받으면 battery-paper-agent-main) 이름 대신 위치를 본다."""
+    """DB는 이 PC의 프로그램 폴더 안에 있어야 한다(외부 전송 없음).
+
+    폴더 이름은 묻지 않는다 — 배포본은 BatteryPaperAgent 등 다른 이름으로 풀린다(2차 점검: 그래서 늘 실패했다).
+    """
+    from pathlib import Path
+
     p = store.DB_PATH.resolve()
-    앱폴더 = Path(store.__file__).resolve().parents[2]
     assert p.suffix == ".db"
-    assert 앱폴더 in p.parents
+    assert Path(store.__file__).resolve().parents[2] in p.parents
 
 
 # ── 마이그레이션 1회성 (실측 버그 회귀 방지) ──────────────────────

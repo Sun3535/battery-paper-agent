@@ -1,0 +1,212 @@
+--- 01:03판/사내_API_설정.md
++++ v2/사내_API_설정.md
+@@ -0,0 +1,209 @@
++# 사내 API 로 바꾸기 — 번역 모델 이름·키 고치는 법
++
++회사에서는 번역에 쓰는 **모델 이름**과 **키**가 지금 설정과 다를 수 있습니다.
++어디를 고치면 되는지 경우별로 적었습니다. 코드를 몰라도 1~2번은 설정 파일만 고치면 됩니다.
++
++> 고치는 파일은 프로그램 폴더 맨 위의 **`.env`** 입니다 (없으면 `.env.example` 을 복사해 이름을 `.env` 로).
++> 고친 뒤에는 **프로그램을 껐다가 다시 켜야** 적용됩니다 (`실행하기.bat` 창을 닫고 다시 실행).
++
++---
++
++## 먼저: 지금 무엇으로 번역하고 있는지 보는 법
++
++프로그램을 켠 채 브라우저에서 **http://localhost:8100/api/health** 를 엽니다.
++
++```
++"translate_provider": "claude"          ← 번역 공급자 (gemini 또는 claude)
++"translate_model": "claude-opus-5-5"    ← 번역에 쓰는 모델 이름
++"paid_apis_enabled": false              ← false 면 잠겨 있어 번역이 실행되지 않음
++```
++
++설정을 고친 뒤 이 화면에서 값이 바뀌었는지 확인하면 됩니다.
++
++---
++
++## 1. 사내 API 가 "Claude(Anthropic) 방식" 일 때 — 설정만 고치면 됨
++
++사내 게이트웨이가 Anthropic API 와 같은 형식(`/v1/messages`)이면 `.env` 에 아래를 넣습니다.
++
++```
++TRANSLATE_PROVIDER=claude
++ANTHROPIC_BASE_URL=https://사내-게이트웨이-주소      ← 사내 주소. 회사 밖 Anthropic 을 직접 쓰면 이 줄은 지움
++ANTHROPIC_API_KEY=사내에서_받은_키
++CLAUDE_TRANSLATE_MODEL=사내에서_쓰는_모델_이름       ← 예: claude-sonnet-5-5. 사내 표기가 다르면 그 표기 그대로
++```
++
++| 바꾸고 싶은 것 | 고칠 줄 |
++|---|---|
++| **모델 이름** | `CLAUDE_TRANSLATE_MODEL=` |
++| **키** | `ANTHROPIC_API_KEY=` (게이트웨이가 "Bearer 토큰" 방식이면 대신 `ANTHROPIC_AUTH_TOKEN=`) |
++| **접속 주소** | `ANTHROPIC_BASE_URL=` |
++| 번역에 들이는 생각의 양 | `CLAUDE_TRANSLATE_EFFORT=low` (low / medium / high) |
++
++**이렇게 했는데 번역이 실패할 때** — 논문 카드에 실패 사유가 한 줄 뜨고(리더를 열면 맨 위에도 나옵니다), 검은 창(서버)에 자세한 오류가 나옵니다.
++- `400` 오류에 `output_config` 또는 `effort` 가 보이면: 사내 모델이 그 기능을 받지 않는 것입니다.
++  `webapp\backend\translate_claude.py` 에서 아래 한 줄을 찾아 `"effort": effort(),` 부분을 지웁니다.
++  ```python
++  output_config={"effort": effort(), "format": {"type": "json_schema", "schema": _SCHEMA}},
++  ```
++  `format` 도 받지 않으면 이 줄 전체를 지워도 동작합니다 — 응답 모양(`{"items": [...]}`)은 요청 본문에도 적혀 있고,
++  모델이 응답을 ```json 코드블록으로 감싸 보내도 벗겨서 읽습니다. 다만 구조화 출력이 없으면 형식이 틀린 묶음이 가끔 생길 수 있고,
++  그 묶음은 저장하지 않고 건너뜁니다(카드에 "문단 N개를 번역하지 못했습니다" 가 뜨면 [이어서 번역] 으로 그 부분만 다시).
++- `401` / `403`: 키가 틀렸거나 권한이 없습니다. `404`: 모델 이름이나 주소가 틀렸습니다.
++- `No module named 'anthropic'`: `실행하기.bat` 를 껐다가 다시 누르면 알아서 설치합니다. 그래도 안 되면 검은 창에서 `.venv\Scripts\python -m pip install anthropic` 을 한 번 실행합니다.
++
++---
++
++## 2. 사내 API 가 "Gemini(구글) 방식" 일 때 — 설정만 고치면 됨
++
++```
++TRANSLATE_PROVIDER=gemini            ← 이 줄이 없어도 기본이 gemini
++TRANSLATE_MODEL=사내에서_쓰는_모델_이름   ← 예: gemini-2.5-flash
++```
++
++- **모델 이름**: `TRANSLATE_MODEL=`
++- **키**: 설정 파일이 아니라 화면에서 넣습니다 → 메뉴바 **[사용자]** → 계정 추가 → **[API]** → 키 붙여넣기 → 이름을 눌러 활성화.
++  (모두가 같은 키를 쓰게 하려면 `.env` 에 `GEMINI_API_KEY=키` 를 넣어도 됩니다. 화면에 등록한 키가 없을 때 이 값을 씁니다.)
++- 이 경로는 구글 주소(`generativelanguage.googleapis.com`)로 직접 나갑니다. 사내 전용 주소로 돌려야 한다면 3번처럼 코드를 고쳐야 합니다.
++
++---
++
++## 3. 사내 API 가 그 밖의 방식일 때 (OpenAI 호환 `/v1/chat/completions` 등) — 파일 하나를 더한다
++
++번역 규칙·문단 묶기·저장은 `translate.py` 가 맡고, **"문단 여러 개 → 번역 여러 개" 한 번의 호출만** 공급자 파일이 맡습니다.
++그래서 새 공급자는 파일 하나를 만들고 `translate.py` 의 네 군데에 이름을 올리면 됩니다.
++
++### 3-1. 새 파일 `webapp\backend\translate_inhouse.py`
++
++아래는 OpenAI 호환 방식의 뼈대입니다. 사내 API 문서에 맞춰 **주소·헤더·응답에서 글을 꺼내는 한 줄**만 고치면 됩니다.
++
++```python
++"""번역 — 사내 API 채널 (OpenAI 호환 예시)."""
++import json
++import os
++import urllib.request
++
++NO_KEY_MESSAGE = "사내 번역 API 설정이 없습니다. .env 에 INHOUSE_API_URL · INHOUSE_API_KEY · INHOUSE_MODEL 을 넣으세요."
++
++
++def model_name() -> str:
++    return os.getenv("INHOUSE_MODEL", "").strip() or "사내-모델-이름"
++
++
++def has_credentials() -> bool:
++    return bool(os.getenv("INHOUSE_API_URL") and os.getenv("INHOUSE_API_KEY"))
++
++
++def translate_batch(texts, system_rule, usage=None):
++    """문단 배열을 한 번에 번역해 같은 길이의 리스트로 돌려준다. 번역을 못 받은 자리는 None."""
++    if not texts:
++        return []
++    from guard import require_paid_apis
++
++    require_paid_apis("번역(사내 API)")          # 잠금 스위치를 그대로 따른다 — 지우지 말 것
++    payload = json.dumps([{"i": i, "t": t} for i, t in enumerate(texts)], ensure_ascii=False)
++    prompt = (
++        "아래 JSON 배열의 각 항목 t를 위 규칙대로 번역하라.\n"
++        '반드시 {"items": [{"i": 0, "t": "번역문"}, ...]} 형식의 JSON 으로만 답하라. 코드블록 표시를 붙이지 마라.\n\n'
++        + payload
++    )
++    body = {
++        "model": model_name(),
++        "messages": [{"role": "system", "content": system_rule}, {"role": "user", "content": prompt}],
++    }
++    req = urllib.request.Request(
++        os.environ["INHOUSE_API_URL"],            # 예: https://사내주소/v1/chat/completions
++        data=json.dumps(body).encode("utf-8"),
++        headers={"Content-Type": "application/json", "Authorization": "Bearer " + os.environ["INHOUSE_API_KEY"]},
++    )
++    data = json.loads(urllib.request.urlopen(req, timeout=300).read().decode("utf-8"))
++    raw = data["choices"][0]["message"]["content"]   # ← 사내 API 응답 모양에 맞게 고치는 한 줄
++    if usage is not None:
++        usage.calls += 1
++        usage.input_chars += len(prompt)
++        usage.output_chars += len(raw)
++
++    from translate import BatchError   # ← 이 오류로 던져야 "그 묶음만 건너뛰고 계속" 한다(다른 오류는 번역 전체를 멈춘다)
++
++    raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
++    try:
++        items = json.loads(raw)["items"]
++        idxs = [int(item["i"]) for item in items]
++    except Exception as e:
++        raise BatchError(f"사내 API 응답 형식이 틀린 묶음이 있습니다: {type(e).__name__}") from e
++    if len(set(idxs)) != len(idxs) or any(not 0 <= i < len(texts) for i in idxs):
++        raise BatchError("사내 API 응답의 항목 번호가 겹치거나 범위를 벗어난 묶음이 있습니다.")  # 옆 문단 번역이 붙는 것을 막는다
++    out = [None] * len(texts)
++    for i, item in zip(idxs, items):
++        t = str(item.get("t", "")).strip()
++        if t:
++            out[i] = t
++    return out
++```
++
++### 3-2. `webapp\backend\translate.py` 에 이름 올리기 (네 군데, 모두 `claude` 가 있는 자리 바로 옆)
++
++1. `PROVIDERS = ("gemini", "claude")` → `("gemini", "claude", "inhouse")`
++2. `current_model_name()` — `if provider() == "claude":` 블록을 복사해 `"inhouse"` / `translate_inhouse` 로 한 벌 더
++3. `ready()` — 같은 방식으로 한 벌 더 (`has_credentials()`, `NO_KEY_MESSAGE`)
++4. `translate_batch()` — 같은 방식으로 한 벌 더: `return translate_inhouse.translate_batch(texts, SYSTEM_RULE, usage)`
++5. `cost_hint()` — 이걸 빼먹으면 화면이 사내 공급자를 Gemini 로 보고 "편당 ₩121" 이라고 적습니다. 맨 앞에 한 벌 더:
++   `if provider() == "inhouse": return {"provider": "inhouse", "model": current_model_name(), "per_page_krw": 0, "per_paper_krw": None}`
++   (회사 부담이라 0원으로 보이게 한 예. 사내 단가가 있으면 그 숫자를 넣습니다.)
++
++⚠️ `translate.py` 를 고치다 오타를 내면 서버가 켜지자마자 꺼집니다. 이번 판의 `실행하기.bat` 은 창을 닫지 않고 기다리므로
++검은 창의 마지막 오류(파일 이름·줄 번호)를 읽고 고치면 됩니다.
++
++그리고 `.env`:
++
++```
++TRANSLATE_PROVIDER=inhouse
++INHOUSE_API_URL=https://사내주소/v1/chat/completions
++INHOUSE_API_KEY=사내에서_받은_키
++INHOUSE_MODEL=사내에서_쓰는_모델_이름
++```
++
++### 3-3. Claude Code 에게 맡기려면 이렇게 말하면 됩니다
++
++> "`사내_API_설정.md` 3번대로 `translate_inhouse.py` 를 만들어 줘. 사내 API 는 (주소 / 요청 예시 / 응답 예시를 붙여넣기).
++> `tests\test_translate_claude.py` 를 본떠 가짜 응답으로 시험도 만들고, 실제 호출은 짧은 논문 1편으로만 확인해."
++
++---
++
++## 4. 화면에 나오는 예상 비용 숫자 바꾸기
++
++번역 버튼과 확인창의 "약 ₩…" 은 `webapp\backend\translate.py` 의 **`cost_hint()`** 가 정합니다.
++
++- Claude 방식: `per_page = 2 if "haiku" … else 35 if "sonnet" … else 70` — 모델 이름에 들어 있는 낱말로 쪽당 원화를 고릅니다.
++  사내 모델 이름이 이 낱말을 포함하지 않으면 **70원/쪽** 으로 나옵니다. 사내 단가에 맞게 숫자를 고치세요.
++- 사내 API 가 무료(회사 부담)면 숫자를 `0` 으로 두면 "약 ₩0" 으로 나옵니다(쪽당·편당 어느 쪽이든).
++- 실제 사용량은 검은 창(서버)에 번역이 끝날 때마다 한 줄 남습니다: `[번역] 문서ID · 공급자 · 모델 · 호출 N회 · 토큰 입력 … / 출력 …`
++
++---
++
++## 5. 번역 말고 다른 AI 기능은 따로입니다
++
++`TRANSLATE_PROVIDER` 는 **번역만** 바꿉니다. 아래 둘은 지금 Gemini(화면에 등록한 키)로 나갑니다.
++
++| 기능 | 모델 이름을 바꾸는 줄 (`.env`) | 코드 위치 |
++|---|---|---|
++| 챗봇 AI 요약 | `ANSWER_MODEL=` (없으면 `TRANSLATE_MODEL` 을 따름) | `webapp\backend\answer.py` |
++| 그림·표 AI 분석 | `FIGURE_ANALYSIS_MODEL=` | `webapp\backend\figure_analysis.py` |
++
++- 챗봇만은 사내 PC 안의 모델로 돌릴 수 있습니다: `USE_LOCAL_LLM=true`, `LOCAL_LLM_HOST=`, `LOCAL_LLM_MODEL=` (Ollama 방식).
++- 이 둘도 사내 API 로 돌리려면 위 두 파일의 호출 부분을 3번처럼 바꿔야 합니다.
++- 사내 API 를 아직 못 붙였다면 `SEARCH_MODE=keyword` 로 두세요. 챗봇이 AI 요약 없이 **찾은 원문 구절만** 보여 줍니다(외부 호출 없음).
++
++---
++
++## 6. 고친 뒤 확인 순서
++
++1. 프로그램을 다시 켠다.
++2. http://localhost:8100/api/health 에서 `translate_provider` · `translate_model` 이 바뀌었는지 본다.
++3. 메뉴바의 잠금 배지를 눌러 유료 API 를 켠다 (잠겨 있으면 번역 버튼이 제한 안내만 띄웁니다).
++4. **쪽수가 적은 논문 1편**의 표지에서 [한글 번역] → 확인창 → 실행.
++5. 카드에 "번역 완료" 가 붙고 리더에서 한국어로 읽히면 성공. 실패하면 카드에 뜨는 사유 한 줄(노란 칸)과 리더 맨 위의 안내, 검은 창의 오류를 본다.
++   번역은 묶음마다 바로 저장되므로, 중간에 실패해도 된 부분은 남고 다시 실행하면 남은 부분만 합니다.
++
++키는 `.env` 에만 두고, 이 파일을 메일·메신저로 보내지 마세요.
++

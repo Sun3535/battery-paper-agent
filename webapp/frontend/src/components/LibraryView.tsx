@@ -14,6 +14,7 @@ import {
   ReadOutlined,
   SearchOutlined,
   TranslationOutlined,
+  WarningOutlined,
 } from '@ant-design/icons'
 import { App, Button, Checkbox, Progress, Tooltip, Upload } from 'antd'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -105,7 +106,7 @@ export function LibraryView() {
           >
             {targets.map((t) => (
               <div key={t.doc_id} style={{ padding: '2px 0' }}>
-                · {t.title.slice(0, 52)}
+                · {t.title.length > 52 ? `${t.title.slice(0, 52)}…` : t.title}
               </div>
             ))}
           </div>
@@ -309,6 +310,8 @@ export function LibraryView() {
       <div className="pa-grid">
         {shown.map((d, i) => {
           const busy = d.status !== 'ready' && d.status !== 'failed'
+          // 번역하는 중에도 읽을 수 있다 — 본문은 이미 뽑혀 있고, 끝난 문단부터 한국어로 바뀐다
+          const canRead = d.status === 'ready' || d.status === 'translating'
           const st = STATUS[d.status]
           const checked = checkedIds.includes(d.doc_id)
           return (
@@ -320,7 +323,7 @@ export function LibraryView() {
               style={{ ['--i' as string]: Math.min(i, 10) }}
               // 한 번 클릭 = 체크 토글 / 두 번 = 원문 읽기
               onClick={() => toggleChecked(d.doc_id)}
-              onDoubleClick={() => d.status === 'ready' && openReader(d.doc_id)}
+              onDoubleClick={() => canRead && openReader(d.doc_id)}
               title={`${d.title}\n\n클릭: 선택 · 더블클릭: 원문 보기`}
             >
               {/* 표지 — PDF 1페이지. 3:4 비율로 크게 깔아 제목·초록이 읽히게 */}
@@ -331,9 +334,9 @@ export function LibraryView() {
                 <div className="pa-check">{checked && <CheckOutlined />}</div>
 
                 {/* 표지에 마우스를 올리면 나오는 버튼 — 번역(아직 안 한 논문만) · 읽기 */}
-                {d.status === 'ready' && (
+                {canRead && (
                   <div className="pa-cover-actions" onDoubleClick={(e) => e.stopPropagation()}>
-                    {!d.translate_complete && (
+                    {d.status === 'ready' && !d.translate_complete && (
                       <button
                         type="button"
                         className={`pa-cover-btn translate${lock.locked ? ' locked' : ''}`}
@@ -394,6 +397,14 @@ export function LibraryView() {
                       color={T.success}
                     />
                   )}
+                </div>
+              )}
+
+              {/* 실패·건너뜀 사유 — 서버는 기록해 두는데 화면에 안 보여 "왜 안 됐는지" 알 길이 없었다(점검 2026-10-14) */}
+              {d.error && !busy && (
+                <div className={`pa-tile-note${d.status === 'failed' ? ' failed' : ''}`} title={d.error}>
+                  <WarningOutlined />
+                  <span>{d.error}</span>
                 </div>
               )}
 

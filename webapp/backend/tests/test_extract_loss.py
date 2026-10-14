@@ -1,0 +1,244 @@
+"""추출에서 글이 사라지던 길 (2026-10-14 종합 점검).
+
+PyMuPDF 로 PDF 를 그 자리에서 지어내 확인한다 — 실제 논문 파일에 기대지 않는다.
+"""
+
+import fitz
+import pytest
+
+import extract
+
+
+def _pdf(tmp_path, draw):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    draw(page)
+    path = tmp_path / "t.pdf"
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def _texts(tmp_path, draw):
+    res = extract.extract_blocks(_pdf(tmp_path, draw), tmp_path / "img")
+    return res, " ".join(b.text for b in res.blocks if b.kind == "text")
+
+
+def test_text_that_only_touches_a_figure_is_kept(tmp_path):
+    """그림 영역에 조금 걸친 캡션·문단을 통째로 버리던 것(서가 91편에서 148블록·7만 7천 자)."""
+    def draw(page):
+        page.draw_rect(fitz.Rect(100, 100, 400, 300), color=(0, 0, 0), fill=(0.8, 0.8, 0.9))
+        # 캡션의 윗부분 몇 pt 가 그림 아래쪽에 걸친다
+        page.insert_text((100, 304), "Fig. 1 Caption that slightly overlaps the figure box", fontsize=10)
+        # 그림 한가운데의 글자는 그림 속 글자다
+        page.insert_text((200, 200), "label inside", fontsize=10)
+
+    res, text = _texts(tmp_path, draw)
+    assert "Caption that slightly overlaps" in text
+    assert "label inside" not in text  # 그림 PNG 에 이미 찍힌다
+    assert sum(b.kind != "text" for b in res.blocks) == 1
+
+
+def test_overlap_rule_is_about_being_inside():
+    region = (100, 100, 400, 300)
+    assert extract._bbox_overlaps((150, 150, 250, 170), region)        # 통째로 안
+    assert not extract._bbox_overlaps((100, 296, 400, 310), region)    # 4pt 만 걸침
+    assert not extract._bbox_overlaps((100, 301, 400, 315), region)    # 안 닿음
+    assert extract._bbox_overlaps((100, 280, 400, 310), region)        # 3분의 2 가 안
+
+
+def test_number_heavy_line_inside_a_paragraph_is_not_dropped(tmp_path):
+    """잔해 판정을 줄 단위로 하면 숫자 많은 줄이 문단 한가운데서 빠진다(새로 올릴 때 477블록)."""
+    def draw(page):
+        y = 100
+        for line in ("The ionic conductivity was measured for every sample at room temperature and the",
+                     "0 7.51 x 10-6 0.51 0.05 1.39 x 10-5 0.41 0.10 8.08 x 10-5 0.37",
+                     "values above were then compared against previously reported garnet electrolytes."):
+            page.insert_text((72, y), line, fontsize=10)
+            y += 12
+
+    _, text = _texts(tmp_path, draw)
+    assert "7.51 x 10-6" in text and "compared against" in text
+
+
+def test_standalone_debris_is_still_dropped(tmp_path):
+    def draw(page):
+        page.insert_text((72, 100), "A normal sentence that should certainly survive extraction.", fontsize=10)
+        page.insert_text((72, 300), "a 0 0 0 b 0 0", fontsize=10)
+
+    _, text = _texts(tmp_path, draw)
+    assert "normal sentence" in text and "a 0 0 0 b" not in text
+
+
+def test_number_heavy_caption_is_kept(tmp_path):
+    """캡션이 숫자가 많다는 이유로 '수식 잔해' 로 지워졌다(2e23038febe7 Fig.3)."""
+    def draw(page):
+        page.insert_text((72, 100), "Fig.3: x = a) 0, b) 0.05, c) 0.10, d) 0.15, e) 0.20.", fontsize=10)
+
+    res, text = _texts(tmp_path, draw)
+    assert "0.05" in text
+    assert res.blocks[0].is_caption
+
+
+def test_non_latin_text_is_not_debris():
+    assert not extract.is_math_debris("Исследование структуры и свойств катодных материалов")
+    assert not extract.is_math_debris("固态电解质的界面稳定性研究进展与展望")
+    assert extract.is_math_debris("a 0 0 0 b 0 0 0 c")
+
+
+def test_table_caption_attaches_to_region_with_cells():
+    """캡션을 짝짓기 전에 종류를 잠정 확정하지 않으면 표 캡션이 붙을 곳이 없다(새 업로드 6편에서 짝을 잃음)."""
+    blocks = [
+        extract.Block(order=1, kind="image", page=1, bbox=(0, 0, 10, 10), image_path="a.png", table_rows=[["a", "b"], ["1", "2"]]),
+        extract.Block(order=2, kind="text", page=1, bbox=(0, 12, 10, 20), text="Table 1 Performance", is_caption=True),
+        extract.Block(order=3, kind="image", page=1, bbox=(0, 30, 10, 40), image_path="b.png"),
+        extract.Block(order=4, kind="text", page=1, bbox=(0, 42, 10, 50), text="Fig. 1 XRD", is_caption=True),
+    ]
+    for b in blocks:
+        if b.kind == "image" and b.table_rows:
+            b.kind = "table"
+    extract._attach_captions(blocks)
+    extract._classify_regions(blocks)
+    assert (blocks[0].kind, blocks[0].text) == ("table", "Table 1 Performance")
+    assert (blocks[2].kind, blocks[2].text) == ("image", "Fig. 1 XRD")
+
+
+@pytest.mark.parametrize("rotation", [0, 90])
+def test_figure_on_rotated_page_is_clipped_where_it_is(tmp_path, rotation):
+    """가로로 누운 쪽에서 그림이 엉뚱한 자리로 오려졌다(319ea7c7c6f1 의 17장). 검은 사각형을 그려 오린 그림이 검은지 본다."""
+    def draw(page):
+        page.draw_rect(fitz.Rect(100, 150, 300, 350), color=(0, 0, 0), fill=(0, 0, 0))
+        page.set_rotation(rotation)
+
+    res = extract.extract_blocks(_pdf(tmp_path, draw), tmp_path / "img")
+    figs = [b for b in res.blocks if b.kind != "text"]
+    assert len(figs) == 1
+    pix = fitz.Pixmap(str(tmp_path / "img" / figs[0].image_path))
+    w, h = pix.width, pix.height
+    assert pix.pixel(w // 2, h // 2)[:3] == (0, 0, 0)  # 오린 그림의 한가운데가 그 사각형이다
+
+
+# ── 2차 점검(2026-10-14) ─────────────────────────────────────────────
+
+def test_table_values_under_header_row_are_kept(tmp_path):
+    """표 캡션 → 머리줄(낱말) → 숫자 줄. 머리줄에서 보호가 꺼져 표의 값이 버려졌다(Molybdate Table 1, 29편 217블록)."""
+    def draw(page):
+        # 줄 사이를 40pt 로 띄운다 — 붙어 있으면 머리줄과 값이 한 문단으로 합쳐져 규칙을 거치지 않는다(2차 감독 점검)
+        page.insert_text((72, 100), "Table 1 Electrochemical performance of the cathodes", fontsize=10)
+        page.insert_text((72, 140), "Sample Voltage range (V) Current density Capacity", fontsize=10)
+        page.insert_text((72, 180), "1.4-4.4 1 C = 129 85.5 5 C 85.76%", fontsize=10)
+        page.insert_text((72, 220), "2.0-4.3 0.1 C = 118 92.1 10 C 80.2%", fontsize=10)
+        page.insert_text((72, 280), "The cycling results above clearly show the benefit of the doping strategy used here.", fontsize=10)
+        page.insert_text((72, 320), "0 0 1 0 2", fontsize=10)  # 문장으로 된 문단 뒤 = 표가 끝났다 → 잔해는 다시 버린다
+
+    res, text = _texts(tmp_path, draw)
+    assert len(res.blocks) == 6 or "0 0 1 0 2" not in text
+    assert "85.76%" in text and "80.2%" in text
+    assert "0 0 1 0 2" not in text
+
+
+def test_page_number_under_table_caption_is_still_dropped(tmp_path):
+    def draw(page):
+        page.insert_text((72, 100), "Table 2 Fitted parameters", fontsize=10)
+        page.insert_text((72, 130), "0.03 19.4 0.51 0.05", fontsize=10)
+        page.insert_text((290, 820), "12", fontsize=10)
+
+    _, text = _texts(tmp_path, draw)
+    assert "19.4" in text
+    assert " 12" not in f" {text} ".replace("19.4", "")
+
+
+def test_number_heavy_second_line_of_a_caption_is_kept(tmp_path):
+    """캡션은 문단으로 합치지 않아 둘째 줄이 따로 떨어진다 — 숫자 위주면 잔해로 지워졌다(b2238da0c2ed p58)."""
+    def draw(page):
+        page.insert_text((72, 100), "Fig. 4 Cycling at different rates of", fontsize=10)
+        page.insert_text((72, 116), "(0.01 mM 20).", fontsize=10)  # 16pt 간격 → 캡션과 따로 떨어진 원시 블록
+
+    res, text = _texts(tmp_path, draw)
+    assert len(res.blocks) == 2, "둘째 줄이 캡션과 한 블록으로 뽑히면 이 시험은 규칙을 거치지 않는다"
+    assert extract.is_math_debris("(0.01 mM 20).")
+    assert "0.01 mM 20" in text
+
+
+def test_number_heavy_raw_block_inside_a_paragraph_is_kept(tmp_path):
+    """숫자 줄이 **따로 떨어진 원시 블록**이어도(줄 간격이 조금 넓은 PDF) 문단으로 합친 뒤 판정해야 남는다.
+
+    1차 시험은 세 줄이 원시 블록 하나로 뽑혀, 줄 단위 판정으로 되돌려도 통과했다(2차 점검이 찾아냄).
+    """
+    def draw(page):
+        page.insert_text((72, 100), "The ionic conductivity of every sample was measured at room temperature and the", fontsize=10)
+        page.insert_text((72, 116), "0 7.51 x 10-6 0.51 0.05 1.39", fontsize=10)  # 16pt 간격 → 원시 블록이 셋으로 뽑힌다
+        page.insert_text((72, 132), "values were compared against previously reported garnet electrolytes.", fontsize=10)
+
+    res = extract.extract_blocks(_pdf(tmp_path, draw), tmp_path / "img")
+    raw = fitz.open(str(tmp_path / "t.pdf"))[0].get_text("dict")["blocks"]
+    assert len([b for b in raw if b.get("type") == 0]) >= 2, "시험 PDF 가 원시 블록 하나로 뽑히면 이 시험은 아무것도 지키지 못한다"
+    assert extract.is_math_debris("0 7.51 x 10-6 0.51 0.05 1.39"), "그 줄만 떼어 보면 잔해여야 시험이 뜻이 있다"
+    text = " ".join(b.text for b in res.blocks if b.kind == "text")
+    assert "7.51 x 10-6" in text and "compared against" in text
+
+
+def test_graph_misread_as_table_still_gets_its_figure_caption():
+    """find_tables 가 그래프 격자를 표로 읽어 잠정 종류가 '표' 인 그림 — 그림 캡션을 거절해 새 업로드 25편에서 40장이 캡션을 잃었다."""
+    blocks = [
+        extract.Block(order=1, kind="image", page=1, bbox=(0, 0, 10, 10), image_path="a.png", table_rows=[["0", "20"], ["40", "60"]]),
+        extract.Block(order=2, kind="text", page=1, bbox=(0, 12, 10, 20), text="Fig. 2 Rate capability", is_caption=True),
+    ]
+    for b in blocks:
+        if b.kind == "image" and b.table_rows:
+            b.kind = "table"
+    extract._attach_captions(blocks)
+    extract._classify_regions(blocks)
+    assert (blocks[0].kind, blocks[0].text, blocks[0].table_rows) == ("image", "Fig. 2 Rate capability", None)
+
+
+def test_extraction_runs_one_at_a_time_and_resets_the_global_flag(tmp_path):
+    """동시 업로드 때 PyMuPDF 전역 설정이 켜진 채 남아 추출이 달라졌다(2차 점검) — 잠금 + 매번 기본값으로."""
+    import threading
+
+    path = _pdf(tmp_path, lambda page: page.insert_text((72, 100), "Plain sentence for the lock test, nothing else here.", fontsize=10))
+    fitz.TOOLS.set_small_glyph_heights(True)  # 누가 켜 두고 갔다고 치자
+    seen = []
+    orig = extract._extract_blocks
+
+    def spy(p, d):
+        seen.append((extract._EXTRACT_LOCK.locked(), fitz.TOOLS.set_small_glyph_heights()))
+        return orig(p, d)
+
+    extract._extract_blocks = spy
+    try:
+        ts = [threading.Thread(target=extract.extract_blocks, args=(path, tmp_path / f"i{n}")) for n in range(3)]
+        for t_ in ts:
+            t_.start()
+        for t_ in ts:
+            t_.join()
+    finally:
+        extract._extract_blocks = orig
+    assert seen and all(locked for locked, _ in seen)
+    assert all(not flag for _, flag in seen)
+    assert not fitz.TOOLS.set_small_glyph_heights()
+
+
+def test_page_number_right_under_a_caption_is_dropped(tmp_path):
+    """캡션 바로 밑에 붙은 쪽 번호는 캡션의 둘째 줄이 아니다(2차 재추출에서 '16', '9' 같은 조각이 섞여 들었다)."""
+    def draw(page):
+        page.insert_text((72, 100), "Fig. 4 Cycling at different rates", fontsize=10)
+        page.insert_text((72, 116), "16", fontsize=10)  # 16pt 간격 → 캡션과 따로 떨어진 원시 블록
+
+    res, text = _texts(tmp_path, draw)
+    assert len(res.blocks) == 1 and "Cycling" in text and "16" not in text
+
+
+def test_table_rule_tests_really_exercise_the_rule(tmp_path, monkeypatch):
+    """감독 점검: 표 머리줄 시험이 규칙을 되돌려도 통과했다. 규칙을 옛날처럼(보통 문단에서 보호를 끔) 바꾸면 값이 사라져야 한다."""
+    def draw(page):
+        page.insert_text((72, 100), "Table 1 Electrochemical performance of the cathodes", fontsize=10)
+        page.insert_text((72, 140), "Sample Voltage range (V) Current density Capacity", fontsize=10)
+        page.insert_text((72, 180), "1.4-4.4 1 C = 129 85.5 5 C 85.76%", fontsize=10)
+
+    res, text = _texts(tmp_path, draw)
+    assert [b.text for b in res.blocks][-1] == "1.4-4.4 1 C = 129 85.5 5 C 85.76%"  # 값 줄이 따로 떨어진 블록이어야 규칙을 거친다
+    monkeypatch.setattr(extract, "_is_prose", lambda t: True)  # 옛 규칙: 머리줄(보통 문단)에서 보호가 꺼진다
+    (tmp_path / "old").mkdir()
+    _, old = _texts(tmp_path / "old", draw)
+    assert "85.76%" not in old, "옛 규칙으로도 값이 남으면 이 시험은 아무것도 지키지 못한다"

@@ -1,0 +1,5 @@
+--- 01:03판/webapp/launch_msgs/installing.txt
++++ v2/webapp/launch_msgs/installing.txt
+@@ -0,0 +1,2 @@
++  [i] 필요한 라이브러리를 설치합니다. 몇 분 걸릴 수 있습니다. 창을 닫지 마세요.
++

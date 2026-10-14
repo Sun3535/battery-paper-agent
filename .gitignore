@@ -1,14 +1,15 @@
-# 내 설정·키 (절대 올리지 않음)
+# 사내 PC에서 생기는 데이터·설정(실수로 올라가지 않게)
 .env
-# 가상환경·캐시
 .venv/
-__pycache__/
-.pytest_cache/
-node_modules/
-# 내 PC에서 생기는 데이터(논문 PDF, DB, 결과물)
 crawler/papers.db
-crawler/*.db
+*.db
+*.lock
+webapp/data/
+webapp/library_config.json
+__pycache__/
+node_modules/
+# 내 논문 PDF·결과물(덧붙임: 예전 판의 .gitignore 에 있던 것)
 input/
 output/
 final_report/
-webapp/data/
+.pytest_cache/

@@ -21,7 +21,7 @@ from extract import extract_blocks
 from guard import paid_apis_enabled
 from translate import TranslationUsage, current_model_name, translate_blocks, usage_line
 
-GCS_BUCKET = os.getenv("BATTERY_RAG_GCS_BUCKET", "")
+GCS_BUCKET = os.getenv("BATTERY_RAG_GCS_BUCKET", "").strip()  # 기본값 없음 — 개인 버킷 이름을 배포본에 싣지 않는다
 
 
 def _rag_index_enabled() -> bool:
@@ -29,8 +29,7 @@ def _rag_index_enabled() -> bool:
 
     (paid_apis_enabled 가 오프라인 모드면 무조건 False 를 돌려주므로 여기서 함께 차단된다.)
     """
-    설정됨 = bool(GCS_BUCKET and os.getenv("BATTERY_RAG_GCP_PROJECT_ID", ""))   # 버킷·프로젝트를 .env 에 넣어야 켜진다
-    return 설정됨 and paid_apis_enabled() and os.getenv("ENABLE_RAG_INDEX", "true").lower() == "true"
+    return bool(GCS_BUCKET) and paid_apis_enabled() and os.getenv("ENABLE_RAG_INDEX", "true").lower() == "true"
 
 
 def process_document(doc_id: str) -> None:
@@ -100,9 +99,9 @@ def process_document(doc_id: str) -> None:
                     translate_blocks(pending, usage, on_batch=on_batch, api_key=active_key)
                 finally:
                     print(usage_line(doc_id, usage), flush=True)  # 중간에 실패해도 쓴 만큼은 남긴다
-                # 번역이 생겼으니 로컬 색인을 갱신 → 한국어 질문으로도 검색된다.
-                with store.connect() as conn:
-                    local_search.index_document(conn, doc_id)
+                    # 번역이 생겼으니 로컬 색인을 갱신 → 한국어 질문으로도 검색된다. 일부만 됐어도 한다(2차 점검).
+                    with store.connect() as conn:
+                        local_search.index_document(conn, doc_id)
         except Exception as e:
             notes.append(f"번역 일부 실패: {e}")
 
@@ -134,9 +133,10 @@ def process_document(doc_id: str) -> None:
         with store.connect() as conn:
             store.set_status(conn, doc_id, "ready", 100, error=" · ".join(notes) or None)
 
-    except Exception:
+    except Exception as e:
+        traceback.print_exc()  # 자세한 경위는 서버 창에 — 카드에는 사람이 읽을 한 줄만 남긴다
         with store.connect() as conn:
-            store.set_status(conn, doc_id, "failed", 0, error=traceback.format_exc()[-800:])
+            store.set_status(conn, doc_id, "failed", 0, error=f"처리 실패: {type(e).__name__}: {str(e)[:300]}")
 
 
 def translate_document(doc_id: str) -> None:
@@ -169,8 +169,10 @@ def translate_document(doc_id: str) -> None:
             translate_blocks(pending, usage, on_batch=on_batch, api_key=active_key)
         finally:
             print(usage_line(doc_id, usage), flush=True)  # 중간에 실패해도 쓴 만큼은 남긴다
+            # 일부만 번역되고 멈춰도, 저장된 번역은 한국어 검색에 잡히게 색인을 갱신한다
+            with store.connect() as conn:
+                local_search.index_document(conn, doc_id)
         with store.connect() as conn:
-            local_search.index_document(conn, doc_id)
             store.set_status(conn, doc_id, "ready", 100)
     except Exception as e:
         with store.connect() as conn:
@@ -196,7 +198,7 @@ def _index_to_rag(pdf_path: Path) -> None:
         ["gcloud", "auth", "print-access-token"],
         capture_output=True, text=True, check=True, shell=True,
     ).stdout.strip()
-    project = os.getenv("BATTERY_RAG_GCP_PROJECT_ID", "")
+    project = os.getenv("BATTERY_RAG_GCP_PROJECT_ID", "")  # 기본값 없음(개인 ID 를 배포본에 싣지 않는다)
     ds = os.getenv("BATTERY_RAG_DATASTORE_ID", "battery-papers-datastore")
     url = (
         f"https://discoveryengine.googleapis.com/v1/projects/{project}/locations/global"

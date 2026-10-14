@@ -59,7 +59,11 @@ function CostBadge() {
   }
 
   if (offline) {
-    return <span className="pa-cost offline">📴 완전 로컬 모드 · 외부 통신 없음</span>
+    return (
+      <span className="pa-cost offline" title="완전 로컬 모드 · 외부 통신 없음">
+        📴 완전 로컬<span className="long"> 모드 · 외부 통신 없음</span>
+      </span>
+    )
   }
   if (on === null) return null
 
@@ -69,7 +73,7 @@ function CostBadge() {
         {on ? (
           <>
             <span className="dot" />
-            유료 API 사용 중 — 눌러서 잠금
+            유료 API 사용 중<span className="long"> — 눌러서 잠금</span>
           </>
         ) : (
           '🔒 유료 API 잠김'
@@ -120,13 +124,13 @@ function UserButton({ onOpen }: { onOpen: () => void }) {
   return (
     <button type="button" className="pa-ghost" onClick={onOpen} title="사용자 · API 키">
       <UserOutlined />
-      {active ? active : '사용자'}
+      <span className="lbl">{active ? active : '사용자'}</span>
     </button>
   )
 }
 
 function Shell() {
-  const { refreshDocuments, refreshHealth, chatOpen, openChat, closeChat, checkedIds, documents } =
+  const { refreshDocuments, refreshHealth, chatOpen, openChat, closeChat, checkedIds, documents, readerOpen } =
     useApp()
   const [usersOpen, setUsersOpen] = useState(false)
   const [memoryOpen, setMemoryOpen] = useState(false)
@@ -195,7 +199,8 @@ function Shell() {
         title={
           <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.02em' }}>
             AI챗봇 (질문&요약)
-            {!!checkedIds.length && (
+            {/* 논문을 읽는 중에는 챗봇이 '그 논문'에 묶인다 — 체크 개수 표시는 틀린 말이 되므로 숨긴다 */}
+            {!!checkedIds.length && !readerOpen && (
               <span className="pa-chip" style={{ marginLeft: 8, color: '#6d28d9', background: '#ede9fe' }}>
                 체크한 {checkedIds.length}편 집중
               </span>

@@ -9,8 +9,6 @@ https://api.openalex.org/works
 from __future__ import annotations
 
 import os
-from pathlib import Path
-
 import requests
 
 from .. import config
@@ -18,13 +16,8 @@ from ..schema import Paper
 from .base import PaperSource
 
 API_URL = "https://api.openalex.org/works"
-# polite pool 용 연락처(인증 아님). 공개 저장소라 개인 이메일을 넣지 않고 .env 의 OPENALEX_MAILTO 로 받는다
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env")   # 이미 있는 환경 변수는 덮어쓰지 않는다
-except ImportError:
-    pass
-MAILTO = os.environ.get("OPENALEX_MAILTO", "").strip()
+# polite pool 용 연락처(인증 아님). 배포본에 개인 주소를 싣지 않는다 — 쓰려면 .env 에 OPENALEX_MAILTO=...
+MAILTO = os.getenv("OPENALEX_MAILTO", "").strip()
 
 
 def _reconstruct_abstract(inverted: dict | None) -> str:
@@ -47,9 +40,8 @@ class OpenAlexSource(PaperSource):
             "filter": "open_access.is_oa:true",  # 오픈액세스만 (PDF 자동 다운로드 전제)
             "sort": "publication_date:desc",
             "per-page": min(max_results, 50),
+            **({"mailto": MAILTO} if MAILTO else {}),
         }
-        if MAILTO:
-            params["mailto"] = MAILTO
         resp = requests.get(API_URL, params=params, timeout=config.REQUEST_TIMEOUT_SEC)
         if resp.status_code == 429:
             return []  # 레이트리밋 — 크롤 런 전체를 죽이지 않는다 (semantic_scholar와 동일 방침)

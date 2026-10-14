@@ -1,0 +1,344 @@
+--- 01:03판/webapp/backend/main.py
++++ v2/webapp/backend/main.py
+@@ -271,20 +271,142 @@
+     return FileResponse(path, media_type="image/png")
+ 
+ 
+-def _focus_preamble(focus_titles: list[str], ref_titles: list[str], full_doc: bool) -> str:
++def _compact_sources(sources: list[str]) -> list[str]:
++    """출처 줄 정리 — "제목 p3" 가 문단 수만큼 되풀이되던 것을 "제목 p1~12" 한 줄로."""
++    import re as _re
++
++    pages: dict[str, list[int]] = {}
++    order: list[str] = []
++    for s_ in sources:
++        m = _re.match(r"^(.*) p(\d+|\?)$", s_)
++        title, page = (m.group(1), m.group(2)) if m else (s_, "?")
++        if title not in pages:
++            pages[title] = []
++            order.append(title)
++        if page.isdigit():
++            pages[title].append(int(page))
++    out = []
++    for t in order:
++        ps = sorted(set(pages[t]))
++        if not ps:
++            out.append(t)
++        elif len(ps) == 1:
++            out.append(f"{t} p{ps[0]}")
++        else:
++            out.append(f"{t} p{ps[0]}~{ps[-1]}")
++    return out
++
++
++def _found_passages(question: str, groups: list[dict]) -> tuple[list[dict], str]:
++    """AI 요약 없이 구절만 보여 줄 때 화면에 실을 묶음.
++
++    통독 묶음(full)은 논문 앞에서부터 잘라 낸 문단이라 '찾은 구절'이 아니다 → 그 논문 안에서 질문 낱말로 다시 찾는다.
++    못 찾으면 문단 없는 묶음을 남겨, 화면이 "이 논문에서는 겹치는 구절을 못 찾았다"고 말할 수 있게 한다.
++    """
++    import local_search
++
++    full_n = sum(1 for g in groups if g.get("full"))
++    keep = 8 if full_n <= 1 else 3
++    out: list[dict] = []
++    note = ""
++    with store.connect() as conn:
++        for g in groups:
++            if not g.get("full"):
++                out.append(g)
++                continue
++            found = local_search.search(conn, question, doc_id=g["doc_id"])
++            note = note or found.get("note", "")  # "3글자 이상인 검색어를 넣어주세요" 같은 안내를 버리지 않는다
++            hit = found["results"]
++            if hit:
++                out.append({**hit[0], "passages": hit[0]["passages"][:keep]})
++            else:
++                out.append({"doc_id": g["doc_id"], "title": g["title"], "score": g.get("score", 0), "passages": []})
++    return out, note
++
++
++def _plain_answer(scope_title: str | None, focus_ids: list[str], results: list[dict], note: str) -> str:
++    """AI 요약 없이 구절만 보여 줄 때의 첫 줄 — 고른 논문에서 찾은 것과 다른 논문(참고)에서 찾은 것을 가른다.
++
++    2차 점검: 고른 논문에는 없고 다른 논문에만 있어도 "「고른 논문」에서 찾았습니다" 라고 했다(91편 중 89편).
++    """
++    mine = sum(1 for g in results if g.get("passages") and (not focus_ids or g["doc_id"] in focus_ids))
++    others = sum(1 for g in results if g.get("passages") and focus_ids and g["doc_id"] not in focus_ids)
++    if not focus_ids:
++        line = f"논문 {mine}편에서 관련 구절을 찾았습니다." if mine else "관련 구절을 찾지 못했습니다."
++    elif mine:
++        line = f"「{scope_title}」에서 관련 구절을 찾았습니다."
++        if others:
++            line += f" (아래 '참고' 표시는 다른 논문 {others}편의 구절입니다.)"
++    else:
++        line = f"「{scope_title}」에서는 질문의 낱말이 그대로 나오는 구절을 찾지 못했습니다."
++        if others:
++            line += f" 다른 논문 {others}편의 구절을 참고로만 붙입니다."
++    if note and not mine and not others:
++        # 검색을 하지 않은 것이다(낱말이 너무 짧음) — "없다" 로 읽히지 않게 까닭부터 말한다
++        return f"검색하지 못했습니다 — {note} (예: Li → lithium, 흑연 → graphite)"
++    if note:
++        line += f" ({note})"
++    if not mine:
++        line += " 다른 표현(영어 낱말)으로 물어보세요."
++    return line
++
++
++def _short(title: str, n: int = 24) -> str:
++    t = (title or "").strip()
++    return t if len(t) <= n else t[:n].rstrip() + "…"
++
++
++def _coverage_note(coverage: list[dict]) -> str:
++    """사용자에게 보여 줄 한 줄 — 답이 논문의 어디까지를 읽고 쓴 것인지. 다 읽었으면 빈 문자열."""
++    cut = [c for c in coverage if c.get("truncated")]
++    if not cut:
++        return ""
++    if len(coverage) == 1:
++        c = cut[0]
++        return (
++            f"\n\n📖 이 답은 논문 앞부분(전체 {c['pages']}쪽 중 {c['read_until_page']}쪽까지, "
++            f"글의 약 {round(100 * c['read_chars'] / max(c['total_chars'], 1))}%)만 읽고 썼습니다. "
++            "뒤쪽 내용은 반영되지 않았을 수 있습니다."
++        )
++    parts = ", ".join(f"「{_short(c['title'])}」 {c['read_until_page']}/{c['pages']}쪽" for c in cut[:6])
++    return (
++        f"\n\n📖 선택한 {len(coverage)}편 가운데 {len(cut)}편은 앞부분만 읽고 썼습니다({parts}"
++        f"{' …' if len(cut) > 6 else ''}). 여러 편을 고를수록 한 편당 읽는 분량이 줄어듭니다."
++    )
++
++
++def _focus_preamble(
++    focus_titles: list[str], ref_titles: list[str], full_doc: bool, coverage: list[dict] | None = None
++) -> str:
+     """체크한 논문을 '집중', 나머지를 '참고'로 구분해 주는 지시문.
+ 
+     이걸 안 붙이면 발췌가 섞여 들어가 모델이 어느 논문 이야기인지 헷갈린다(실측).
++    읽은 범위를 사실대로 말한다 — 앞부분만 넣고 "전문" 이라고 하면, 뒤쪽 내용을 물었을 때
++    모델이 "논문에 없다" 고 답하게 된다(2026-10-14 점검).
+     """
+     if not focus_titles:
+         return ""
+     names = "」, 「".join(focus_titles)
+-    what = "전문" if full_doc else "발췌"
+     one = len(focus_titles) == 1
++    cut = [c for c in (coverage or []) if c.get("truncated")]
++    what = "발췌" if (cut or not full_doc) else "전문"
+     text = (
+         f"[중요] 사용자가 선택한 논문은 「{names}」 {'한 편' if one else f'{len(focus_titles)}편'}이다. "
+         f"답은 이 논문{'' if one else '들'}의 내용을 중심으로 하라. 앞쪽 발췌가 그 논문{'' if one else '들'}의 {what}이다.\n"
+     )
++    if cut:
++        if one:
++            c = cut[0]
++            where = f"전체 {c['pages']}쪽 가운데 {c['read_until_page']}쪽까지의 앞부분"
++        else:
++            where = "다음 논문들의 앞부분(" + ", ".join(
++                f"「{_short(c['title'], 40)}」 {c['read_until_page']}/{c['pages']}쪽까지" for c in cut[:8]
++            ) + ")"
++        text += (
++            f"주의: 발췌에는 {where}만 들어 있다. 그 뒤 내용은 주어지지 않았다. "
++            "발췌에서 답을 찾지 못하면 '논문에 없다' 고 단정하지 말고, "
++            "'읽은 범위 밖(뒤쪽)에 있을 수 있다' 고 밝혀라.\n"
++        )
+     if ref_titles:
+         text += (
+             "뒤쪽 발췌는 라이브러리의 다른 논문(참고용: 「"
+@@ -333,7 +455,9 @@
+         if focus_ids:
+             figs = []
+             for d in focus_ids:
+-                figs.extend(figure_analysis.relevant_analyses(conn, req.question, doc_id=d))
++                found = figure_analysis.relevant_analyses(conn, req.question, doc_id=d)
++                # 논문을 정해 놓고 물었으면 낱말이 안 겹쳐도 그 논문의 분석을 넣는다(한 편일 때 3건, 여러 편이면 1건씩)
++                figs.extend(found or figure_analysis.doc_analyses(conn, d, 3 if len(focus_ids) == 1 else 1))
+         else:
+             figs = figure_analysis.relevant_analyses(conn, req.question)
+         upsell = figure_analysis.upsell_note(conn, req.question, len(figs))
+@@ -350,45 +474,44 @@
+     # (실측: 논문의 결론 문장을 못 집어 "자료에 없다"고 답함).
+     full_doc = False
+     ref_titles: list[str] = []
++    coverage: list[dict] = []
+     with store.connect() as conn:
+         if focus_ids:
+             packed = local_search.focused_passages(conn, focus_ids, req.question)
+             if packed:
+                 res, full_doc = packed, True
+                 ref_titles = packed["reference_titles"]
++                coverage = packed.get("coverage", [])
+             else:
+                 res = local_search.search(conn, req.question, doc_id=scope)
+         else:
+             res = local_search.search(conn, req.question)
+     n_docs = len(res["results"])
+ 
++    cover_note = _coverage_note(coverage)
+     base = {
+-        "results": res["results"],
++        # 화면에는 통독한 문단을 그대로 싣지 않는다 — 문단 수십 개가 답 밑에 깔려 답이 화면 밖으로 밀렸다.
++        # 통독 묶음은 "어디까지 읽었는지"(coverage)만 보내고, 검색으로 찾은 묶음은 구절을 그대로 보낸다.
++        "results": [({**g, "passages": []} if g.get("full") else g) for g in res["results"]],
++        "coverage": coverage,
+         "memories_used": [m["question"] for m in memories],
+         "memory_hints": memories,
+         "figures_used": [f"{f['title']} p{f['page']}" for f in figs],
+         "scope": scope_title,
+     }
++    # AI 가 읽지 않는 응답(키워드·잠금·자격증명 없음)용 — 찾은 구절을 싣고, "어디까지 읽었다"는 말은 하지 않는다
++    # AI 를 부르지 않으므로 그림 분석·과거 대화도 쓰이지 않았다 — "활용했다" 고 표시하지 않는다(2차 점검)
++    plain = {**base, "figures_used": [], "memories_used": []}
++    plain_note = res.get("note", "")
++    if full_doc:
++        plain["results"], found_note = _found_passages(req.question, res["results"])
++        plain["coverage"] = []
++        plain_note = plain_note or found_note
+ 
+     # 키워드 검색만 원하면 여기서 끝 (완전 0원)
+     if mode == "keyword":
+-        if focus_ids:
+-            answer = (
+-                f"「{scope_title}」에서 관련 구절을 찾았습니다."
+-                if n_docs
+-                else f"「{scope_title}」에서는 관련 구절을 찾지 못했습니다."
+-            )
+-        else:
+-            answer = (
+-                f"논문 {n_docs}편에서 관련 구절을 찾았습니다."
+-                if n_docs
+-                else "관련 구절을 찾지 못했습니다. 다른 표현으로 검색해 보세요."
+-            )
+-        if res["note"]:
+-            answer += f" ({res['note']})"
+-        if figs:
+-            answer += f" (그림 분석 {len(figs)}건 포함)"
+-        return {"mode": "keyword", "answer": answer + upsell, "citations": [], **base}
++        answer = _plain_answer(scope_title, focus_ids, plain["results"], plain_note)
++        return {"mode": "keyword", "answer": answer + upsell, "citations": [], **plain}
+ 
+     # ── 로컬 LLM 우선 (사내망) — 논문 내용이 PC 밖으로 나가지 않는다 ──
+     # 오프라인 모드에서도 동작한다: 외부 통신이 아니라 127.0.0.1 호출이기 때문.
+@@ -396,7 +519,7 @@
+ 
+     if os.getenv("USE_LOCAL_LLM", "false").strip().lower() == "true":
+         try:
+-            ctx = _focus_preamble(focus_titles, ref_titles, full_doc) + context_block
++            ctx = _focus_preamble(focus_titles, ref_titles, full_doc, coverage) + context_block
+             text, sources = answer_mod.summarize_local(
+                 req.question, res["results"], ctx, full_doc=full_doc
+             )
+@@ -406,8 +529,8 @@
+                         chat_memory.remember(conn, req.question, text, sources, "local_llm")
+                 return {
+                     "mode": "local_llm",
+-                    "answer": text + upsell,
+-                    "citations": [{"title": s, "gcs_uri": "", "snippet": ""} for s in sources],
++                    "answer": text + cover_note + upsell,
++                    "citations": [{"title": s, "gcs_uri": "", "snippet": ""} for s in _compact_sources(sources)],
+                     **base,
+                 }
+         except Exception as e:  # 로컬 LLM이 꺼져 있으면 아래 경로로 진행
+@@ -415,13 +538,8 @@
+ 
+     # ── AI 요약 — 유료. 하드락이면 키워드 결과만 돌려준다 ──────────
+     if not guard.paid_apis_enabled():
+-        where = f"「{scope_title}」에서" if focus_ids else f"논문 {n_docs}편에서"
+-        answer = (
+-            f"{where} 관련 구절을 찾았습니다. (AI 요약은 잠김) "
+-            if n_docs
+-            else f"{where} 관련 구절을 찾지 못했습니다. "
+-        )
+-        return {"mode": "locked", "answer": answer + guard.block_message(), "citations": [], **base}
++        answer = _plain_answer(scope_title, focus_ids, plain["results"], plain_note) + " (AI 요약은 잠김) "
++        return {"mode": "locked", "answer": answer + guard.block_message(), "citations": [], **plain}
+ 
+     # ── 폴백 체인 (조건2): ① API 키로 요약 → ② Vertex → ③ 안내 ────
+     import users
+@@ -434,7 +552,7 @@
+         try:
+             if cred["kind"] in ("free", "paid"):
+                 # API 키만으로 RAG — Vertex 없는 사용자도 여기서 답을 받는다
+-                ctx = _focus_preamble(focus_titles, ref_titles, full_doc) + context_block
++                ctx = _focus_preamble(focus_titles, ref_titles, full_doc, coverage) + context_block
+                 text, sources = answer_mod.summarize(
+                     req.question, res["results"], cred["key"], ctx, full_doc=full_doc
+                 )
+@@ -445,8 +563,8 @@
+                         chat_memory.remember(conn, req.question, text, sources, "api")
+                 return {
+                     "mode": "api",
+-                    "answer": text + upsell,
+-                    "citations": [{"title": s, "gcs_uri": "", "snippet": ""} for s in sources],
++                    "answer": text + cover_note + upsell,
++                    "citations": [{"title": s, "gcs_uri": "", "snippet": ""} for s in _compact_sources(sources)],
+                     **base,
+                 }
+ 
+@@ -470,7 +588,7 @@
+                     chat_memory.remember(
+                         conn, req.question, text, [c.get("title", "") for c in citations], "cloud"
+                     )
+-            return {"mode": "cloud", "answer": text + upsell, "citations": citations, **base}
++            return {"mode": "cloud", "answer": text + cover_note + upsell, "citations": citations, **base}
+ 
+         except Exception as e:  # noqa: BLE001 — 다음 자격증명으로 넘어간다
+             tried.append(f"{cred['kind']}: {type(e).__name__}")
+@@ -487,7 +605,7 @@
+         + "우측 상단 [사용자] → [API]에서 API 키를 등록하거나 크레딧(GCP 프로젝트 ID)을 설정하세요. "
+         "아래 검색 구절은 그대로 사용할 수 있습니다."
+     )
+-    return {"mode": "fallback", "answer": hint, "citations": [], **base}
++    return {"mode": "fallback", "answer": hint, "citations": [], **plain}
+ 
+ 
+ @app.post("/api/search/reindex")
+@@ -792,6 +910,48 @@
+ 
+ 
+ _restore_paid_override()
++
++
++_INSTANCE_LOCK = None  # 이 서버가 쥐고 있는 '하나만 실행' 표식(파일 잠금) — 프로세스가 끝나면 OS 가 푼다
++
++
++def _only_server_running() -> bool:
++    """이 서고(DB)를 쓰는 서버가 지금 이것 하나뿐인가 — 파일 잠금으로 확인한다.
++
++    2차 감독 점검: 상태 복구를 import 때 돌렸더니, 실행하기.bat 을 두 번 누르거나 서버를 켠 채 시험을 돌리면
++    **진행 중인** 번역이 "서버가 꺼졌습니다" 로 바뀌었다(그 뒤 [이어서 번역] 을 누르면 이중 과금 위험).
++    """
++    global _INSTANCE_LOCK
++    path = store.DB_PATH.with_suffix(".server.lock")
++    try:
++        f = open(path, "a+b")
++        if sys.platform == "win32":
++            import msvcrt
++
++            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
++        else:
++            import fcntl
++
++            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
++    except OSError:
++        return False  # 다른 서버가 쥐고 있다 — 그 서버의 진행 중 작업을 건드리지 않는다
++    _INSTANCE_LOCK = f
++    return True
++
++
++@app.on_event("startup")
++def _recover_interrupted() -> None:
++    """서버가 켜질 때 한 번 — 처리 도중 서버가 꺼져 '번역 중'·'추출 중' 에 멈춘 논문을 풀어 준다."""
++    try:
++        if not _only_server_running():
++            print("[시작] 같은 서고를 쓰는 서버가 이미 켜져 있어 상태 복구를 건너뜁니다.", flush=True)
++            return
++        with store.connect() as conn:
++            n = store.recover_interrupted(conn)
++        if n:
++            print(f"[시작] 처리 도중 멈췄던 논문 {n}편의 상태를 풀었습니다.", flush=True)
++    except Exception as e:  # 상태 복구가 서버 시작을 막으면 안 된다
++        print(f"[시작] 멈춘 논문 상태 복구 실패: {e}", flush=True)
+ 
+ 
+ @app.post("/api/maintenance/clean-text")

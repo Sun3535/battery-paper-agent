@@ -5,6 +5,13 @@ import json
 from unittest.mock import patch
 
 from rag import config, credit_guard, search_client
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _project_id(monkeypatch):
+    # 배포본에는 개인 프로젝트 ID 기본값이 없다(.env 에서 읽음) — 시험은 가짜 ID 로 돈다
+    monkeypatch.setattr(config, "GCP_PROJECT_ID", "test-project")
 
 
 SAMPLE_RESPONSE = {
@@ -14,7 +21,7 @@ SAMPLE_RESPONSE = {
             "document": {
                 "derivedStructData": {
                     "title": "Silicon Anode Volume Expansion",
-                    "link": "gs://example-bucket/papers/arxiv_2606.21467.pdf",
+                    "link": "gs://test-bucket/papers/arxiv_2606.21467.pdf",
                     "snippets": [{"snippet": "nano-structuring mitigates volume expansion..."}],
                 }
             }
@@ -27,7 +34,6 @@ SAMPLE_RESPONSE = {
 @patch("rag.search_client.urllib.request.urlopen")
 def test_ask_parses_summary_and_citations(mock_urlopen, _tok, tmp_path, monkeypatch):
     monkeypatch.setenv("PAID_APIS_ENABLED", "true")  # 하드락 우회 (모킹이라 실호출 없음)
-    monkeypatch.setattr(config, "GCP_PROJECT_ID", "test-project")  # 공개본은 기본값이 비어 있다
     monkeypatch.setattr(credit_guard, "STATE_PATH", tmp_path / "state.json")
     mock_urlopen.return_value.__enter__.return_value = io.BytesIO(
         json.dumps(SAMPLE_RESPONSE).encode("utf-8")
@@ -62,7 +68,6 @@ def test_ask_blocked_by_hard_lock(monkeypatch):
 @patch("rag.search_client.urllib.request.urlopen")
 def test_ask_handles_empty_summary(mock_urlopen, _tok, tmp_path, monkeypatch):
     monkeypatch.setenv("PAID_APIS_ENABLED", "true")  # 하드락 우회 (모킹이라 실호출 없음)
-    monkeypatch.setattr(config, "GCP_PROJECT_ID", "test-project")  # 공개본은 기본값이 비어 있다
     monkeypatch.setattr(credit_guard, "STATE_PATH", tmp_path / "state.json")
     mock_urlopen.return_value.__enter__.return_value = io.BytesIO(json.dumps({}).encode("utf-8"))
     res = search_client.ask("질문")

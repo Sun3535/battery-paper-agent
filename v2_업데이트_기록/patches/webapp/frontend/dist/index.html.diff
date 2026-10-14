@@ -1,0 +1,24 @@
+--- 01:03판/webapp/frontend/dist/index.html
++++ v2/webapp/frontend/dist/index.html
+@@ -5,15 +5,18 @@
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+     <meta name="theme-color" content="#F7F6FD" />
+     <!-- 한글이 맑은 고딕으로 떨어지면 촌스러워진다 → Pretendard.
+-         인터넷이 막힌 PC(사내망)에서는 이 줄이 조용히 실패하고 시스템 글꼴로 보인다(동작엔 영향 없음). -->
++         화면을 막지 않게 받는다(media=print 로 받고 다 받으면 all 로 바꾼다). 예전에는 사내망에서 이 요청이
++         대답 없이 매달리면 그동안 화면 전체가 비어 있었다(2차 점검). 못 받으면 시스템 글꼴로 보인다. -->
+     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+     <link
+       rel="stylesheet"
+       href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css"
++      media="print"
++      onload="this.media='all'"
+     />
+     <title>논문책방 — 배터리 논문 E-book</title>
+-    <script type="module" crossorigin src="/assets/index-BjgwyDLS.js"></script>
+-    <link rel="stylesheet" crossorigin href="/assets/index-gR_1zqRW.css">
++    <script type="module" crossorigin src="/assets/index-DhrqNfoG.js"></script>
++    <link rel="stylesheet" crossorigin href="/assets/index-CFftML3l.css">
+   </head>
+   <body>
+     <div id="root"></div>

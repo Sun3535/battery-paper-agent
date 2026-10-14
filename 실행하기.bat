@@ -1,72 +1,121 @@
 @echo off
-chcp 65001 > nul
 setlocal
-
-rem ══════════════════════════════════════════════════════════════
-rem  Battery Paper Agent — 실행 스크립트 (Windows)
+rem ==============================================================
+rem  Nonmun-Chaekbang (Battery Paper Agent) launcher for Windows
 rem
-rem  이 파일을 더블클릭하면 됩니다.
-rem  처음 한 번만 필요한 것들을 자동으로 설치하고, 이후에는 바로 켜집니다.
-rem ══════════════════════════════════════════════════════════════
+rem  KEEP THIS FILE ASCII-ONLY AND CRLF.
+rem   - Korean text inside a .bat breaks cmd.exe now and then.
+rem     Korean messages live in webapp\launch_msgs\*.txt instead.
+rem   - Saved with LF line endings, this file does not run at all.
+rem   - Never put a closing parenthesis inside an echo within if-blocks.
+rem  To change the port, replace 8100 everywhere in this file
+rem  and in webapp\launch_msgs\running.txt.
+rem ==============================================================
 
-cd /d "%~dp0"
+rem pushd also works for network paths: it maps a temporary drive letter.
+pushd "%~dp0" || (
+    echo  [!] Cannot open the program folder. Copy it to a local drive such as C: or D: and run again.
+    pause
+    exit /b 1
+)
+chcp 65001 > nul
 
 echo.
 echo  === Battery Paper Agent ===
 echo.
 
-rem ── 1) Python 확인 ────────────────────────────────────────────
+rem -- 1. Python --------------------------------------------------
 python --version > nul 2>&1
 if errorlevel 1 (
-    echo  [!] Python 이 설치되어 있지 않습니다.
-    echo      https://www.python.org/downloads/ 에서 설치하세요.
-    echo      설치할 때 "Add Python to PATH" 를 꼭 체크하세요.
+    echo  [!] Python was not found. Install it from https://www.python.org/downloads/
+    echo      and tick "Add Python to PATH" during setup.
+    type "webapp\launch_msgs\no_python.txt" 2>nul
     echo.
     pause
     exit /b 1
 )
 
-rem ── 2) 설정 파일 ──────────────────────────────────────────────
+rem -- 2. Settings file: never touched once it exists ---------------
 if not exist ".env" (
-    echo  [i] 설정 파일이 없어 기본값으로 만듭니다 (.env)
+    echo  [i] Creating the settings file .env from .env.example
     copy ".env.example" ".env" > nul
 )
 
-rem ── 3) 가상환경 + 라이브러리 (처음 한 번만) ───────────────────
-if not exist ".venv" (
-    echo  [i] 처음 실행입니다. 필요한 라이브러리를 설치합니다.
-    echo      몇 분 걸릴 수 있습니다. 창을 닫지 마세요.
-    echo.
+rem -- 3. Virtual environment ---------------------------------------
+set "HADVENV=0"
+if exist ".venv\Scripts\activate.bat" set "HADVENV=1"
+if "%HADVENV%"=="0" (
+    echo  [i] First run: creating the Python environment .venv
     python -m venv .venv
     if errorlevel 1 goto :fail
-    call ".venv\Scripts\activate.bat"
-    python -m pip install --upgrade pip
-    python -m pip install -r "webapp\backend\requirements.txt"
-    if errorlevel 1 goto :fail
+)
+call ".venv\Scripts\activate.bat"
+
+rem A .venv made in another folder points to that old folder.
+python -c "import os,sys; sys.exit(0 if os.path.normcase(os.path.realpath(sys.prefix)) == os.path.normcase(os.path.realpath('.venv')) else 3)" > nul 2>&1
+if errorlevel 3 (
+    echo  [!] The .venv folder was made in another place - the program folder was moved or renamed.
+    echo      Close this window, delete the .venv folder, and run this file again.
+    type "webapp\launch_msgs\moved.txt" 2>nul
     echo.
-    echo  [i] 설치 완료.
-) else (
-    call ".venv\Scripts\activate.bat"
+    pause
+    exit /b 1
 )
 
-rem ── 4) 실행 ───────────────────────────────────────────────────
+rem -- 4. Libraries ----------------------------------------------------
+rem  After a successful install, requirements.txt is copied into .venv.
+rem  If that copy is missing or differs, install again. This covers
+rem  an install that failed halfway and an upgrade that added libraries.
+fc /b "webapp\backend\requirements.txt" ".venv\requirements.installed" > nul 2>&1
+if errorlevel 1 (
+    echo  [i] Installing libraries. This can take a few minutes. Do not close this window.
+    type "webapp\launch_msgs\installing.txt" 2>nul
+    echo.
+    python -m pip install --upgrade pip
+    python -m pip install -r "webapp\backend\requirements.txt"
+    if errorlevel 1 goto :installfail
+    copy /y "webapp\backend\requirements.txt" ".venv\requirements.installed" > nul
+    echo.
+    echo  [i] Install finished.
+)
+
+:run
+rem -- 5. Run ----------------------------------------------------------
 echo.
-echo  브라우저에서 아래 주소로 접속하세요:
-echo.
-echo      http://localhost:8100
-echo.
-echo  종료하려면 이 창에서 Ctrl+C 를 누르거나 창을 닫으세요.
+echo  Open this address in your browser:  http://localhost:8100
+echo  To stop: press Ctrl+C in this window, or close it.
+type "webapp\launch_msgs\running.txt" 2>nul
 echo.
 
-start "" http://localhost:8100
+rem Open the browser a few seconds later, when the server is up.
+start "" /b python -c "import time, webbrowser; time.sleep(4); webbrowser.open('http://localhost:8100')"
 python -m uvicorn webapp.backend.main:app --host 127.0.0.1 --port 8100
 
+rem The server only returns here when it stops. Keep the window so the reason can be read.
+echo.
+echo  [i] The server has stopped. If it stopped by itself, read the messages above.
+echo      Port already in use means the program is probably running in another window.
+type "webapp\launch_msgs\stopped.txt" 2>nul
+echo.
+pause
 goto :eof
+
+:installfail
+if "%HADVENV%"=="1" (
+    echo.
+    echo  [!] Could not install the new libraries. Starting with the libraries already installed.
+    echo      Most features work. New features may not - for example Claude translation.
+    type "webapp\launch_msgs\install_skipped.txt" 2>nul
+    echo.
+    goto :run
+)
 
 :fail
 echo.
-echo  [!] 설치에 실패했습니다. 위 메시지를 확인하세요.
-echo      사내망이라면 pip 가 막혔을 수 있습니다 (프록시 설정 필요).
+echo  [!] Install failed. Read the messages above.
+echo      Behind a company proxy, pip may be blocked.
+echo      After fixing the cause, run this file again. It resumes from the install step.
+type "webapp\launch_msgs\failed.txt" 2>nul
 echo.
 pause
 exit /b 1

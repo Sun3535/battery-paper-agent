@@ -23,7 +23,7 @@ SYSTEM_RULE = """너는 이차전지 분야 연구 보조원이다.
 4. 근거로 쓴 발췌 번호를 [1] [2] 형태로 문장 끝에 붙여라.
 5. 마크다운 제목(##)은 쓰지 말고, 3~6문장으로 간결히 답하라."""
 
-MAX_PASSAGE_CHARS = 700  # 발췌 1건 상한 (비용 통제)
+MAX_PASSAGE_CHARS = 700  # 검색으로 찾은 발췌 1건 상한 (비용 통제). 통독 묶음에는 적용하지 않는다
 MAX_PASSAGES = 8
 # 논문 1편 통독 모드(scope)에서는 문단 수 제한을 크게 푼다 — 논문 전체를 읽혀야 정확해진다
 MAX_PASSAGES_FULL_DOC = 400
@@ -36,18 +36,32 @@ def build_prompt(
 
     full_doc=True (논문 1편 통독 모드)면 문단 수 상한을 크게 풀어 논문 전체를 넣는다.
     """
-    limit = MAX_PASSAGES_FULL_DOC if full_doc else MAX_PASSAGES
+    limit = MAX_PASSAGES  # 검색으로 찾은 발췌(참고 묶음 포함)의 개수 상한
     lines, sources = [], []
-    n = 0
+    n = n_search = 0
+    # 통독 묶음이 하나뿐이면 머리표에 논문 제목을 되풀이하지 않는다 — 문단마다 제목 전체가 붙어
+    # 프롬프트의 4분의 1(문단이 잘게 갈린 논문은 절반 이상)이 머리표였다(2026-10-14 점검).
+    full_groups = [g for g in results if g.get("full")]
     for g in results:
+        whole = bool(g.get("full"))
+        short_head = whole and len(full_groups) == 1
+        title = g.get("title", "?")
         for p in g.get("passages", []):
-            if n >= limit:
+            # 통독 묶음은 개수로 자르지 않는다 — 분량은 이미 글자 예산이 정했고, 그 양이 사용자 안내(coverage)와 같아야 한다.
+            # (2차 점검: 문단 400개 상한에 걸린 논문은 안내보다 적게 들어갔다)
+            if not whole and n_search >= limit:
                 break
             n += 1
+            n_search += 0 if whole else 1
             text = re.sub(r"[「」]", "", p.get("text", ""))  # 하이라이트 마커 제거
-            text = re.sub(r"\s+", " ", text)[:MAX_PASSAGE_CHARS]
-            lines.append(f"[{n}] ({g.get('title', '?')} p{p.get('page', '?')}) {text}")
-            sources.append(f"{g.get('title', '?')} p{p.get('page', '?')}")
+            text = re.sub(r"\s+", " ", text)
+            if not whole:
+                # 통독 묶음은 문단을 자르지 않는다. 예전에는 통독에도 700자 상한이 걸려,
+                # 91편 전부에서 긴 문단의 뒤가 잘렸다(서가 글의 43%).
+                text = text[:MAX_PASSAGE_CHARS]
+            head = f"p{p.get('page', '?')}" if short_head else f"{title} p{p.get('page', '?')}"
+            lines.append(f"[{n}] ({head}) {text}")
+            sources.append(f"{title} p{p.get('page', '?')}")
 
     body = "\n".join(lines) or "(관련 발췌 없음)"
     ctx = f"\n\n{extra_context}" if extra_context else ""

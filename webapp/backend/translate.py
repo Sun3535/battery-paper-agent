@@ -68,15 +68,28 @@ class TranslationUsage:
 PROVIDERS = ("gemini", "claude")
 
 
+class BatchError(RuntimeError):
+    """묶음 하나가 쓸 수 있는 번역을 돌려주지 않음(거절·출력 잘림·형식 오류).
+
+    이 묶음만 건너뛰고 다음 묶음으로 넘어간다. 잠금·키 없음·인증 오류처럼 "어느 묶음이든 똑같이 실패할" 오류는
+    이 예외가 아니라 그대로 올라가 번역을 멈춘다(같은 실패를 묶음마다 되풀이하며 돈을 쓰지 않게).
+    """
+
+
+class TranslationIncomplete(RuntimeError):
+    """끝까지 돌았지만 번역하지 못한 문단이 남음 — 사유를 사용자에게 보여 주기 위한 예외."""
+
+
 def cost_hint() -> dict:
     """화면의 버튼·확인창에 보여 줄 번역 비용 어림값(원). 공급자·모델마다 다르다.
 
-    claude 는 쪽당(실측 2026-10-14: 7쪽 논문 = 입력 9,772 / 출력 7,943 토큰, Opus 5.5 로 약 $0.20 ≈ 쪽당 ₩40),
+    claude 는 쪽당(실측 2026-10-14, Opus 5.5·논문 4편 63쪽 = 약 $3.13 → 쪽당 약 $0.05 ≈ ₩70.
+    7쪽짜리 짧은 글은 쪽당 ₩40, 그림 설명이 긴 15쪽 논문은 ₩88 로 논문마다 2배쯤 차이 난다),
     gemini 는 편당(기존 어림값). 어림일 뿐이고, 실제 사용량은 서버 기록의 [번역] 줄에 토큰 수로 남는다.
     """
     if provider() == "claude":
         m = current_model_name()
-        per_page = 1 if "haiku" in m else 20 if "sonnet" in m else 100 if "fable" in m else 40
+        per_page = 2 if "haiku" in m else 35 if "sonnet" in m else 175 if "fable" in m else 70
         return {"provider": "claude", "model": m, "per_page_krw": per_page, "per_paper_krw": None}
     return {"provider": "gemini", "model": current_model_name(), "per_page_krw": None, "per_paper_krw": 121}
 
@@ -238,12 +251,13 @@ def translate_batch(
         for item in data:
             idx = int(item["i"])
             if 0 <= idx < len(texts):
-                out[idx] = str(item.get("t", ""))
-        # 빈 항목은 원문 유지 (번역 실패해도 내용이 사라지지 않게)
-        return [out[i] or texts[i] for i in range(len(texts))]
-    except Exception:
-        # 파싱 실패 시 원문 그대로 — 내용 소실 방지가 최우선
-        return list(texts)
+                out[idx] = str(item.get("t", "") or "")
+    except Exception as e:
+        # 예전에는 여기서 원문을 그대로 돌려줘 "번역됨" 으로 저장됐다(영어가 번역본 자리에 영영 남는다).
+        # 이제 이 묶음은 저장하지 않는다 — 원문은 리더가 어차피 보여 주고, 다시 실행하면 이 묶음만 다시 한다.
+        raise BatchError(f"번역 응답을 읽지 못했습니다: {e}") from e
+    # 번역문이 돌아오지 않은 자리는 None — 호출부가 저장하지 않는다(원문으로 채우지 않는다)
+    return [out[i].strip() or None for i in range(len(texts))]
 
 
 def translate_blocks(
@@ -255,38 +269,62 @@ def translate_blocks(
     """블록 리스트(dict, extract.Block.to_dict 형태)를 번역해 {order: 번역문} 반환.
 
     - kind=text 와 그림/표 캡션(text 필드)을 모두 번역 대상으로 삼는다.
+    - **같은 글은 한 번만 보낸다.** 캡션은 그림 블록과 캡션 글 블록 양쪽에 같은 글로 들어 있어,
+      예전에는 두 번 번역했다(돈도 두 번, 문구도 서로 달라질 수 있었다). 한 번 번역해 양쪽에 같이 저장한다.
     - MAX_CHARS_PER_CALL 단위로 묶어 호출 수를 줄인다.
     - on_batch(mapping, done, total): 배치 하나가 끝날 때마다 호출된다. 호출부가 이 시점에
       DB에 저장하면 중간에 실패해도 그때까지의 번역이 보존된다(재실행 시 재과금 0).
+    - 묶음 하나가 실패(BatchError)해도 **다음 묶음은 계속한다.** 예전에는 거기서 멈춰, 다시 눌러도
+      같은 묶음에서 또 멈추고 그 뒤 문단은 영영 번역되지 않았다. 끝까지 돈 뒤, 번역하지 못한 문단이
+      있으면 TranslationIncomplete 로 사유를 알린다(자동으로 다시 시도하지는 않는다 — 같은 실패에 돈을 또 쓰지 않게).
     """
-    targets: list[tuple[int, str]] = []
+    orders_of: dict[str, list[int]] = {}
     for b in blocks:
         text = (b.get("text") or "").strip()
         if text and needs_translation(text):
-            targets.append((b["order"], text))
+            orders_of.setdefault(text, []).append(b["order"])
+    targets = list(orders_of)  # 서로 다른 글만, 처음 나온 순서대로
 
     # 배치 미리 구성 (진행률 계산용)
-    batches: list[list[tuple[int, str]]] = []
-    cur: list[tuple[int, str]] = []
+    batches: list[list[str]] = []
+    cur: list[str] = []
     size = 0
-    for order, text in targets:
+    for text in targets:
         if size + len(text) > MAX_CHARS_PER_CALL and cur:
             batches.append(cur)
             cur, size = [], 0
-        cur.append((order, text))
+        cur.append(text)
         size += len(text)
     if cur:
         batches.append(cur)
 
     result: dict[int, str] = {}
+    missing = 0  # 번역문을 받지 못한 문단 수(블록 기준)
+    reasons: list[str] = []
     for i, batch in enumerate(batches, 1):
-        translated = translate_batch([t for _, t in batch], usage, api_key=api_key)
+        try:
+            translated = translate_batch(batch, usage, api_key=api_key)
+        except BatchError as e:
+            translated = [None] * len(batch)
+            if str(e) not in reasons:
+                reasons.append(str(e))
         # None(번역을 받지 못한 자리)은 담지 않는다 → 미번역으로 남아 다음 실행 때 그 블록만 다시 호출된다
-        mapping = {order: ko for (order, _), ko in zip(batch, translated) if ko}
+        mapping: dict[int, str] = {}
+        for text, ko in zip(batch, translated):
+            if ko:
+                for order in orders_of[text]:
+                    mapping[order] = ko
+            else:
+                missing += len(orders_of[text])
         result.update(mapping)
         if on_batch:
             on_batch(mapping, i, len(batches))  # 배치별 즉시 저장 → 중단돼도 손실 없음
         if i < len(batches):
             time.sleep(PACING_SEC)
 
+    if missing:
+        why = " / ".join(reasons) if reasons else "모델이 일부 문단의 번역문을 돌려주지 않았습니다."
+        raise TranslationIncomplete(
+            f"문단 {missing}개를 번역하지 못했습니다 — {why} 다시 실행하면 남은 문단만 번역합니다."
+        )
     return result

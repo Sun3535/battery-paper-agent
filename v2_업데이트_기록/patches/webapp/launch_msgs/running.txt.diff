@@ -1,0 +1,7 @@
+--- 01:03판/webapp/launch_msgs/running.txt
++++ v2/webapp/launch_msgs/running.txt
+@@ -0,0 +1,4 @@
++
++  브라우저에서  http://localhost:8100  으로 접속하세요. 곧 자동으로 열립니다.
++  끄려면 이 창에서 Ctrl+C 를 누르거나 창을 닫으세요.
++

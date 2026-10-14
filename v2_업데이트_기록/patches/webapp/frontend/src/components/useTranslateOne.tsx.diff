@@ -1,0 +1,23 @@
+--- 01:03판/webapp/frontend/src/components/useTranslateOne.tsx
++++ v2/webapp/frontend/src/components/useTranslateOne.tsx
+@@ -59,15 +59,17 @@
+     if (await lock.blocked('번역을')) return
+     const est = translateEstimate(useApp.getState().health, [doc])
+     modal.confirm({
+-      title: '이 논문을 한국어로 번역할까요?',
++      title: doc.translated ? '남은 문단을 이어서 번역할까요?' : '이 논문을 한국어로 번역할까요?',
+       width: 460,
+       content: (
+         <div style={{ fontSize: 13, lineHeight: 1.7 }}>
+-          <div style={{ color: T.textDim, marginBottom: 6 }}>{doc.title.slice(0, 110)}</div>
++          <div style={{ color: T.textDim, marginBottom: 6 }}>{doc.title.length > 110 ? `${doc.title.slice(0, 110)}…` : doc.title}</div>
+           예상 비용 <b style={{ color: T.warning }}>약 ₩{est.krw.toLocaleString()}</b>{' '}
+           <span style={{ color: T.textFaint }}>({est.basis})</span>
+           <div style={{ marginTop: 6, fontSize: 12, color: T.textFaint }}>
+-            한 번 번역한 논문은 저장되어 다시 열 때 비용이 들지 않습니다.
++            {doc.translated
++              ? '이미 번역된 문단은 다시 과금되지 않습니다. 실제 비용은 남은 분량만큼만 듭니다.'
++              : '한 번 번역한 논문은 저장되어 다시 열 때 비용이 들지 않습니다.'}
+           </div>
+         </div>
+       ),

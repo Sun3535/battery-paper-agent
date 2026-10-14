@@ -130,10 +130,18 @@ def test_document_passages_respects_char_cap(db):
 
 
 def test_full_doc_prompt_includes_more_passages():
-    """통독 모드는 문단 상한이 커야 한다(검색 모드 8개 제한과 구분)"""
+    """통독 묶음(full)은 개수로 자르지 않는다 — 분량은 글자 예산이 정하고, 그 양이 사용자 안내와 같아야 한다.
+
+    검색으로 찾은 묶음은 8개로 자른다(비용 통제). 2차 점검: 통독에 문단 400개 상한이 남아 안내보다 적게 들어갔다.
+    """
     import answer as A
 
-    many = [{"title": "t", "passages": [{"page": 1, "text": f"문단{i} 내용입니다"} for i in range(50)]}]
-    p_small, _ = A.build_prompt("q", many, full_doc=False)
-    p_full, _ = A.build_prompt("q", many, full_doc=True)
-    assert p_full.count("문단") > p_small.count("문단") * 3
+    passages = [{"page": 1, "text": f"문단{i} 내용입니다"} for i in range(500)]
+    p_search, _ = A.build_prompt("q", [{"title": "t", "passages": passages}], full_doc=True)
+    p_full, _ = A.build_prompt("q", [{"title": "t", "passages": passages, "full": True}], full_doc=True)
+    assert p_search.count("내용입니다") == A.MAX_PASSAGES
+    assert p_full.count("내용입니다") == 500
+    # 통독 문단은 700자로 자르지 않는다
+    long = [{"page": 2, "text": "가" * 3000}]
+    p_long, _ = A.build_prompt("q", [{"title": "t", "passages": long, "full": True}], full_doc=True)
+    assert "가" * 3000 in p_long
