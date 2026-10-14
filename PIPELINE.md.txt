@@ -1,0 +1,104 @@
+# Role: Advanced Battery Materials Research Agent
+당신은 이차전지(Secondary Battery) 도메인 지식에 정통한 수석 연구원이자, Python 기반의 문서 자동화 파이프라인 전문가입니다. 
+주어진 PDF 논문을 분석하여 블로그나 사내 위키에 즉시 배포할 수 있는 고품질의 마크다운(Markdown) 문서를 생성하는 파이프라인을 구축하고 관련 코드를 모두 작성해야 합니다.
+
+이 파이프라인은 최종적으로 클로드 코드가 없는 다른 로컬 PC의 VS Code 환경에서 실행될 예정입니다. 따라서 호환성과 안전한 환경 설정에 각별히 신경 써주세요.
+
+# Directory Structure
+작업을 시작하기 전, 아래의 디렉토리 구조를 상정하고 코드를 작성하세요.
+- /input (원본 PDF 논문 위치)
+- /output/images (추출된 Figure 이미지)
+- /output/text (파싱된 텍스트 청크 및 JSON 데이터)
+- /scripts (단계별 Python 스크립트)
+- /final_report (최종 마크다운 결과물)
+- root에 `README.md`, `requirements.txt`, `.env.example` 위치
+
+# Pipeline Steps & Requirements
+
+## Step 1: PDF Parsing & Asset Separation (PDF 파싱 및 에셋 분리)
+- [ ] `scripts/01_extract.py` 작성
+- **Library**: `PyMuPDF (fitz)` 및 `re` (정규표현식) 사용
+- **Task**: 
+  - 페이지 단위로 스캔하여 텍스트를 추출하고 섹션별로 분리합니다.
+  - 문서 내의 이미지(Figure, Table)를 추출하여 `/output/images`에 저장합니다.
+  - **[CRITICAL]** 추출된 이미지 파일명은 반드시 본문의 캡션과 일치하도록 `Figure_1.png`, `Figure_2.png` 형식으로 넘버링해야 합니다. 
+  - 본문 텍스트 내에서 해당 이미지가 위치했던 지점(예: [Figure 1 위치])을 마커로 남겨두어 추후 어셈블리 시 매핑되도록 합니다.
+- **🛡️ Error Handling (교차 검증 로직)**:
+  - 텍스트 본문 내에서 정규식(예: `Fig\. \d+`, `Figure \d+`)을 사용하여 언급된 모든 Figure 번호의 목록을 추출하세요.
+  - 실제로 추출된 이미지 파일(`Figure_X.png`)의 번호와 텍스트에서 추출한 번호 목록을 비교(Cross-validation)하는 로직을 추가하세요.
+  - 불일치(이미지 누락 또는 넘버링 오류)가 발생할 경우 터미널에 경고 로그를 출력하고, 매핑 딕셔너리에 누락 상태를 기록하세요.
+
+## Step 2: Multimodal Figure Interpretation (멀티모달 시각 자료 해석)
+- [ ] `scripts/02_analyze_image.py` 작성
+- **Library**: `google-generativeai` (Gemini API) 및 `python-dotenv` 사용
+- **Task**:
+  - `/output/images`에 있는 배터리 구조도, 충방전 사이클, XRD 패턴 등의 이미지를 읽습니다. (단, Step 1에서 누락 처리된 이미지는 스킵합니다.)
+  - **Model**: `gemini-1.5-pro` (또는 최신 비전 지원 모델)을 사용하여 이미지를 분석하도록 코드를 작성하세요. 
+  - **[CRITICAL] API Key Handling**: API 키는 코드에 절대 하드코딩하지 마세요. 스크립트 최상단에 반드시 아래 로직을 포함하여 `.env` 파일에서 키를 안전하게 로드하도록 작성하세요.
+    ```python
+    import os
+    from dotenv import load_dotenv
+    import google.generativeai as genai
+
+    load_dotenv()
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+    ```
+  - **System Prompt for Vision**: "당신은 배터리 소재 전문가입니다. 이 그래프의 X축, Y축 데이터를 분석하고, 논문의 핵심 결과(예: 특정 조건에서의 사이클 수명 향상, 쿨롱 효율 변화 등)를 한글로 상세히 해설하세요."
+  - 분석된 해설은 `Figure_1_caption.txt` 형태로 저장합니다.
+
+## Step 3: Sectional Chunking & Translation/Summarization (청킹 및 번역/요약)
+- [ ] `scripts/03_translate_summarize.py` 작성
+- **Library**: `google-generativeai` (Gemini API) 및 `python-dotenv` 사용
+- **Task**:
+  - Step 1에서 추출된 텍스트를 Abstract, Introduction, Experimental, Results, Conclusion 등 주요 섹션별로 청킹(Chunking)합니다.
+  - 각 청크를 한글로 전문 번역합니다. 토큰 제한과 환각을 방지하기 위해 반드시 섹션 단위로 나누어 제미나이 API를 호출하세요. (Step 2와 동일한 API Key Handling 적용)
+  - 번역이 완료되면 전체 내용을 바탕으로 **[3줄 핵심 요약]**과 **[연구의 핵심 기여점(Contribution)]**을 별도로 추출하여 저장합니다.
+
+## Step 4: Final Markdown Assembly (최종 문서 어셈블리)
+- [ ] `scripts/04_assemble.py` 작성
+- **Task**:
+  - 번역된 텍스트와 요약본, 그리고 이미지 해설 데이터를 하나로 병합합니다.
+  - Step 1에서 남겨둔 마커 위치에, 실제 이미지 링크(`![Figure_X](../../output/images/Figure_X.png)`)와 Step 2에서 생성한 **[한글 심층 해설 캡션]**을 삽입합니다.
+- **🛡️ Error Handling (누락 이미지 대처)**:
+  - Step 1의 교차 검증 결과, 본문에는 언급되었으나 실제 추출되지 못한 이미지가 있다면 마크다운 문법이 깨지지 않도록 이미지 링크 대신 아래의 경고 문구를 삽입하세요:
+    `> ⚠️ **[System Warning]** Figure_X 이미지를 원본 PDF에서 자동으로 추출하지 못했습니다. 원본 논문을 참조해 주세요.`
+  - 최종 결과물을 가독성 높은 Markdown 형식으로 `/final_report/battery_paper_analysis.md`에 저장합니다.
+
+## Step 5: Migration & Documentation (다른 PC 이전을 위한 환경 및 문서 설정)
+- [ ] `requirements.txt`, `.env.example`, `README.md` 작성
+- **Task**:
+  - 위 1~4단계 스크립트를 구동하는 데 필요한 모든 외부 라이브러리(`PyMuPDF`, `google-generativeai`, `python-dotenv` 등)의 버전을 명시하여 `requirements.txt`를 생성하세요.
+  - 내용이 `GEMINI_API_KEY=여기에_제미나이_API_키를_입력하세요`로 채워진 `.env.example` 파일을 생성하세요.
+  - 사용자가 다른 VS Code PC로 이 코드를 가져갔을 때 따라 할 수 있는 가이드라인(`README.md`)을 작성하세요. `README.md`에는 가상환경(venv) 설정 방법, 의존성 설치(`pip install -r requirements.txt`), `.env` 파일 세팅 방법, 그리고 01번부터 04번 스크립트의 실행 순서가 명시되어야 합니다.
+
+# Output Format Specification (Step 4 적용)
+최종 마크다운은 반드시 아래의 템플릿 구조를 따라야 합니다.
+
+---
+# [논문 제목 번역본]
+**원제:** [Original Title]
+**저자:** [Authors]
+
+## 💡 3줄 핵심 요약
+1. [요약 1]
+2. [요약 2]
+3. [요약 3]
+
+## 🎯 연구의 핵심 기여점
+- [기여점 요약]
+
+## 1. Abstract (요약)
+[한글 번역 내용]
+
+## 2. Introduction (서론)
+[한글 번역 내용]
+
+## 3. Results and Discussion (결과 및 고찰)
+[한글 번역 내용]
+![Figure_1](../../output/images/Figure_1.png)
+> **📊 AI Figure 심층 분석:** [Step 2에서 생성된 그래프/데이터 한글 해설]
+[이어지는 텍스트 내용]
+
+## 4. Conclusion (결론)
+[한글 번역 내용]
+---

@@ -1,0 +1,14 @@
+{
+  "vision_analysis": {
+    "role": "당신은 이차전지 소재 및 전기화학 분석 최고 전문가입니다.",
+    "focus_points": "특히 사이클 수명(Cycle life), 쿨롱 효율(Coulombic efficiency), 그리고 임피던스(EIS) 변화에 집중해서 분석해 주세요.",
+    "output_format": "결과는 반드시 '1. 데이터 개요, 2. 핵심 발견, 3. 성능에 미치는 영향' 3가지 항목으로 나누어 한글로 작성하세요."
+  },
+  "translation": {
+    "tone_and_manner": "전문적이고 학술적인 KCI 논문 스타일의 건조한 문체로 번역하세요.",
+    "terminology": "Cathode는 '양극재', Anode는 '음극재', Electrolyte는 '전해질'로 통일하세요."
+  },
+  "summarization": {
+    "instruction": "이 논문이 기존 연구의 한계를 어떻게 극복했는지(Novelty)를 중심으로 3줄 요약하세요."
+  }
+}

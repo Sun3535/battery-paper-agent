@@ -1,0 +1,15 @@
+{
+  "total": 1,
+  "offset": 0,
+  "data": [
+    {
+      "paperId": "abc123def456",
+      "title": "Silicon Anode Volume Expansion and SEI Formation",
+      "abstract": "We investigate volume expansion in silicon anodes and its effect on coulombic efficiency.",
+      "publicationDate": "2025-11-03",
+      "authors": [{"authorId": "1", "name": "Kim Yuna"}],
+      "externalIds": {"DOI": "10.1000/example2.doi"},
+      "openAccessPdf": {"url": "https://example.com/paper.pdf", "status": "GREEN"}
+    }
+  ]
+}

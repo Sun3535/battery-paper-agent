@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <entry>
+    <id>http://arxiv.org/abs/2401.01234v2</id>
+    <published>2024-01-15T12:00:00Z</published>
+    <title>Solid Electrolyte Ionic Conductivity Study</title>
+    <summary>We study the ionic conductivity of solid electrolytes for all-solid-state batteries.</summary>
+    <author><name>Jane Doe</name></author>
+    <author><name>John Smith</name></author>
+    <link href="http://arxiv.org/abs/2401.01234v2" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2401.01234v2" rel="related" type="application/pdf"/>
+    <arxiv:doi>10.1000/example.doi</arxiv:doi>
+  </entry>
+</feed>
